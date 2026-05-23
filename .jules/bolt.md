@@ -1,0 +1,3 @@
+## 2024-05-23 - Python `rglob` Performance with Large Excluded Directories
+**Learning:** `Path.rglob()` traverses the entire directory tree before you can filter results in Python. If a codebase contains massive hidden directories (like `.git` or `.obsidian` with thousands of objects), `rglob` will waste massive amounts of time recursively reading these directories even if you immediately filter them out afterwards.
+**Action:** Always use `os.walk()` when you need to exclude specific directories in Python. By modifying the `dirs` list in-place (`dirs[:] = [d for d in dirs if d not in EXCLUDED_DIRS]`), `os.walk` will not even attempt to descend into the excluded directories, leading to drastic performance improvements for vault search and list operations.
