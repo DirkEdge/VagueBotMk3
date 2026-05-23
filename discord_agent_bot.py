@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 import asyncio
 import datetime
 import logging
@@ -11,7 +12,7 @@ from discord.ext import tasks, commands
 # Add Qwen-Agent to the Python path
 sys.path.append(os.path.join(os.path.dirname(__file__), 'Qwen-Agent-main'))
 
-from qwen_agent.agents import Assistant
+from qwen_agent.agents import Assistant  # type: ignore
 import obsidian_tools
 from obsidian_tools import (
     VaultReader,
@@ -53,6 +54,9 @@ if LLM_API_KEY:
     llm_cfg['api_key'] = LLM_API_KEY
 if LLM_API_BASE:
     llm_cfg['base_url'] = LLM_API_BASE
+    llm_cfg['model_server'] = LLM_API_BASE  # Qwen-Agent uses 'model_server' for OpenAI compatible API
+if LLM_PROVIDER == "openai" or (LLM_API_BASE and "http" in LLM_API_BASE):
+    llm_cfg['model_type'] = 'oai'
 if LLM_USE_RAW_API:
     llm_cfg['use_raw_api'] = True
 
@@ -91,9 +95,68 @@ intents.messages = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 obsidian_tools.DISCORD_BOT = bot  # Set the reference in tools
 
-# Active user sessions / threads to maintain chat history
-# Map of channel_id -> list of Qwen-Agent message history
+@bot.command()
+async def ping(ctx):
+    logger.info("Ping command triggered.")
+    await ctx.send("pong")
+
+@bot.command()
+async def clear(ctx):
+    channel_id = ctx.channel.id
+    if channel_id in channel_histories:
+        channel_histories[channel_id] = []
+        save_histories()
+        logger.info(f"Cleared chat history for channel {channel_id}.")
+        await ctx.send("🧹 **Chat history cleared successfully.**")
+    else:
+        await ctx.send("🧹 **No chat history found for this channel.**")
+
+# File path for persistent chat histories
+HISTORY_FILE = os.path.join(os.path.dirname(__file__), "chat_history.json")
+
+# Map of channel_id -> list of conversational messages (excluding system messages)
 channel_histories = {}
+
+# Active conversation session tracking (channel_id -> (last_user_id, last_timestamp))
+active_sessions = {}
+SESSION_TIMEOUT_SECONDS = 300  # 5 minutes
+
+def load_histories():
+    global channel_histories
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+                # Convert keys back to integers (JSON keys are always strings)
+                channel_histories = {int(k): v for k, v in loaded.items()}
+                logger.info(f"Loaded persistent chat history for {len(channel_histories)} channels.")
+        except Exception as e:
+            logger.error(f"Error loading chat histories: {e}")
+            channel_histories = {}
+    else:
+        channel_histories = {}
+
+def save_histories():
+    try:
+        # Convert keys to strings for JSON serialization
+        to_save = {str(k): v for k, v in channel_histories.items()}
+        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(to_save, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"Error saving chat histories: {e}")
+
+def get_history_with_system_context(channel_id):
+    """Rebuild conversation history by prepending the latest vault metadata from _CLAUDE.md."""
+    history = list(channel_histories.get(channel_id, []))
+    claude_md_path = VAULT_ROOT / "_CLAUDE.md"
+    if claude_md_path.exists():
+        try:
+            claude_content = claude_md_path.read_text(encoding="utf-8")
+            system_content = f"Obsidian Vault Configuration (_CLAUDE.md):\n```markdown\n{claude_content}\n```"
+            history.insert(0, {'role': 'system', 'content': system_content})
+        except Exception as e:
+            logger.error(f"Error loading _CLAUDE.md: {e}")
+    return history
 
 def sync_agent_run(agent_instance, messages_list) -> str:
     """Synchronous function to consume the agent's runner generator. Runs safely in a background thread."""
@@ -284,25 +347,55 @@ async def on_message(message: discord.Message):
         
     # Ignore commands prefix (like command commands if any)
     if message.content.startswith("!"):
+        logger.info(f"Command prefix detected. Processing command: {message.content!r}")
         await bot.process_commands(message)
         return
 
-    # Check if the message is in a DM or if the bot is explicitly mentioned
-    is_dm = isinstance(message.channel, discord.DMChannel)
+    # Check routing conditions
+    is_dm = message.guild is None
     is_mentioned = bot.user.mentioned_in(message)
-    
-    # Also support logging if it's the dedicated log/vault logs channel
     is_log_channel = LOG_CHANNEL_ID and message.channel.id == LOG_CHANNEL_ID
 
-    if not (is_dm or is_mentioned or is_log_channel):
+    # Check if this is a reply to the bot
+    is_reply_to_bot = False
+    if message.reference and message.reference.resolved:
+        resolved = message.reference.resolved
+        if isinstance(resolved, discord.Message) and resolved.author.id == bot.user.id:
+            is_reply_to_bot = True
+
+    # Check if the channel is a dedicated chat channel
+    is_chat_channel = False
+    if hasattr(message.channel, 'name'):
+        channel_name = message.channel.name.lower()
+        if channel_name in ('second-brain', 'vague-bot', 'chat-with-ai', 'obsidian-bot'):
+            is_chat_channel = True
+
+    # Check active conversation session continuation
+    is_session_continuation = False
+    now = datetime.datetime.now()
+    if message.channel.id in active_sessions:
+        last_user_id, last_time = active_sessions[message.channel.id]
+        if last_user_id == message.author.id and (now - last_time).total_seconds() < SESSION_TIMEOUT_SECONDS:
+            is_session_continuation = True
+
+    should_respond = is_dm or is_mentioned or is_log_channel or is_reply_to_bot or is_chat_channel or is_session_continuation
+
+    logger.info(f"Received message from {message.author} in {message.channel} (ID: {message.channel.id}): {message.content!r} "
+                f"[is_dm={is_dm}, is_mentioned={is_mentioned}, is_log_channel={is_log_channel}, "
+                f"is_reply_to={is_reply_to_bot}, is_chat_channel={is_chat_channel}, is_session={is_session_continuation}] -> should_respond={should_respond}")
+
+    if not should_respond:
         return
+
+    # Update active session timestamp
+    active_sessions[message.channel.id] = (message.author.id, datetime.datetime.now())
 
     # Process conversational message in the agentic loop
     channel_id = message.channel.id
     
     # If the bot was mentioned in a server channel, strip the mention to get clean prompt
     user_prompt = message.content
-    if bot.user.mentioned_in(message):
+    if is_mentioned:
         # Remove the mention from the content (e.g. <@123456789>)
         mention_str = f"<@{bot.user.id}>"
         mention_nick_str = f"<@!{bot.user.id}>"
@@ -310,58 +403,68 @@ async def on_message(message: discord.Message):
         if not user_prompt:
             user_prompt = "Hello"  # Default prompt if it was just a raw mention
 
-    # 1. Immediate Acknowledge: Send a typing indicator and a tentative placeholder message
-    await message.channel.trigger_typing()
-    placeholder = await message.channel.send("🧠 *Thinking... parsing your vault context...*")
+    logger.info(f"Acknowledge message from {message.author}: sending placeholder in channel {channel_id}")
+    # 1. Immediate Acknowledge: Send a tentative placeholder message
+    try:
+        placeholder = await message.channel.send("🧠 *Thinking... parsing your vault context...*")
+    except Exception as e:
+        logger.error(f"Failed to send placeholder message: {e}")
+        return
     
     # 2. Push processing to background task to keep WebSocket connection active
+    logger.info(f"Dispatching run_agent_loop as background task for channel {channel_id} with prompt: {user_prompt!r}")
     asyncio.create_task(run_agent_loop(message, placeholder, channel_id, user_prompt))
 
 async def run_agent_loop(message: discord.Message, placeholder: discord.Message, channel_id: int, user_prompt: str):
-    try:
-        # Load or initialize chat history for this channel
-        if channel_id not in channel_histories:
-            channel_histories[channel_id] = []
-            
-        # Append user message to history
-        channel_histories[channel_id].append({'role': 'user', 'content': user_prompt})
-        
-        # Instantiate agent
-        agent = get_agent_for_channel(channel_id)
-        
-        # Initialize vault context if first time (e.g. read _CLAUDE.md)
-        claude_md_path = VAULT_ROOT / "_CLAUDE.md"
-        if len(channel_histories[channel_id]) == 1 and claude_md_path.exists():
-            try:
-                claude_content = claude_md_path.read_text(encoding="utf-8")
-                # Feed the vault metadata as system context inside the history
-                channel_histories[channel_id].insert(0, {
-                    'role': 'system', 
-                    'content': f"Obsidian Vault Configuration (_CLAUDE.md):\n```markdown\n{claude_content}\n```"
-                })
-            except Exception as e:
-                logger.error(f"Error loading _CLAUDE.md: {e}")
+    # Use context manager to trigger typing across both DMs and Guild text channels safely
+    async with message.channel.typing():
+        try:
+            # Load or initialize chat history for this channel
+            if channel_id not in channel_histories:
+                channel_histories[channel_id] = []
                 
-        # Run Qwen-Agent generator in a separate worker thread to prevent event loop deadlocks with our async channel tools
-        bot_response_content = await asyncio.to_thread(sync_agent_run, agent, channel_histories[channel_id])
+            # Append user message to history
+            channel_histories[channel_id].append({'role': 'user', 'content': user_prompt})
             
-        # Update history with bot response
-        channel_histories[channel_id].append({'role': 'assistant', 'content': bot_response_content})
-        
-        # 3. Post synthesized response back to channel
-        # If response is too long for Discord (2000 character limit), split it
-        if len(bot_response_content) > 1900:
-            chunks = [bot_response_content[i:i+1900] for i in range(0, len(bot_response_content), 1900)]
-            await placeholder.edit(content=chunks[0])
-            for chunk in chunks[1:]:
-                await message.channel.send(chunk)
-        else:
-            await placeholder.edit(content=bot_response_content)
+            # Prune conversational history to the last 30 messages to avoid context window overflow
+            if len(channel_histories[channel_id]) > 30:
+                channel_histories[channel_id] = channel_histories[channel_id][-30:]
+                
+            # Save history to disk
+            save_histories()
             
-    except Exception as e:
-        logger.error(f"Error running agent loop: {e}")
-        await placeholder.edit(content=f"❌ **An error occurred**: {e}")
+            # Rebuild history list by prepending the latest vault system context
+            history_to_send = get_history_with_system_context(channel_id)
+            
+            # Instantiate agent
+            agent = get_agent_for_channel(channel_id)
+            
+            # Run Qwen-Agent generator in a separate worker thread to prevent event loop deadlocks with our async channel tools
+            bot_response_content = await asyncio.to_thread(sync_agent_run, agent, history_to_send)
+                
+            # Update history with bot response
+            channel_histories[channel_id].append({'role': 'assistant', 'content': bot_response_content})
+            
+            # Prune again (after adding assistant response) and save
+            if len(channel_histories[channel_id]) > 30:
+                channel_histories[channel_id] = channel_histories[channel_id][-30:]
+            save_histories()
+            
+            # 3. Post synthesized response back to channel
+            # If response is too long for Discord (2000 character limit), split it
+            if len(bot_response_content) > 1900:
+                chunks = [bot_response_content[i:i+1900] for i in range(0, len(bot_response_content), 1900)]
+                await placeholder.edit(content=chunks[0])
+                for chunk in chunks[1:]:
+                    await message.channel.send(chunk)
+            else:
+                await placeholder.edit(content=bot_response_content)
+                
+        except Exception as e:
+            logger.error(f"Error running agent loop: {e}")
+            await placeholder.edit(content=f"❌ **An error occurred**: {e}")
 
 
 if __name__ == "__main__":
+    load_histories()
     bot.run(DISCORD_TOKEN)

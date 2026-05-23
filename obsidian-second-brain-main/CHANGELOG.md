@@ -9,6 +9,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - **Discord AI Partner Bot (`discord_agent_bot.py`):** Always-On background partner that integrates Qwen-Agent with a Gateway WebSocket connection to Discord. Listens across the entire server, responding to DMs and direct mentions. Runs the LLM execution in separate background worker threads (`asyncio.to_thread`) to ensure compatibility with synchronous and asynchronous operations.
+- **Persistent Chat History:** Integrated automated history persistence loading and saving to `chat_history.json` on disk, allowing the bot to survive restarts and system upgrades without losing context. Implemented history pruning to the last 30 messages to avoid context window overflow.
+- **Autonomous Conversation Routing & Session Continuation:** Enabled the bot to autonomously reply without pings in direct messages, when replied to (discord message reference), in designated channels (`second-brain`, `vague-bot`), or during active conversation sessions (5-minute continuation timeout per channel per user). Added a `!clear` utility command to reset active channel history.
 - **Custom Obsidian and Discord Tools (`obsidian_tools.py`):** Custom subclasses of Qwen-Agent's `BaseTool` (VaultReader, VaultWriter, VaultSearcher, VaultLister, VaultHealthChecker, DiscordChannelLister, DiscordChannelReader, DiscordMessageSender). Integrates the Discord client reference to enable cross-channel navigation and automated posting from within the agent loop.
 - **AI-First Validator in Tooling:** `VaultWriter` enforces formatting rules (YAML frontmatter, `ai-first: true`, dates, tags, `## For future Claude` preambles, and wikilinks) at the API write level.
 - **Layer 4 Scheduled Loops:** Integrated `discord.ext.tasks` background loops executing Morning sweeps, Nightly closes, Weekly reviews, and Sunday Health/Contradiction audits, with results logging silently to the vault and summaries reporting to a `#vault-logs` channel.
@@ -22,6 +24,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **IDE Static Linter Errors:** Added `# type: ignore` comments to runtime path imports (`qwen_agent.agents`) to silence false-positive IDE static analysis imports warnings.
+- **Ollama model name configuration in `.env`:** Fixed the mismatch between the configured `LLM_MODEL=3.5:9b-ctx8k` and the actual Ollama tag name `qwen3.5:9b-ctx8k`, which caused Ollama to return a 404 Model Not Found error.
+- **Discord Bot routing and diagnostics:** Added a `!ping` test command to verify Gateway connectivity and message delivery. Added verbose logging in the `on_message` event handler to track incoming messages, and replaced `isinstance(message.channel, discord.DMChannel)` with the robust `message.guild is None` check to ensure DMs are correctly routed to the agent loop.
 - **`scripts/setup.sh` robustness:** four issues fixed together. Vault paths containing apostrophes or other shell metacharacters (`Joe's Notes`) no longer crash the installer - `eval echo` replaced with bash parameter substitution. `python` replaced with `python3` for compatibility with macOS 13+ and Ubuntu 22+ which don't ship a `python` symlink. All three `settings.json` writes are now atomic (`mv` instead of `cat … && rm`). The MCP setup prompt is skipped when stdin is not a terminal so `curl | bash` installs and CI don't hang.
 
 - **`vault_stats.py` people count:** now counts both `type: person` and `type: entity` in the People aggregate. Real vaults using either convention report the correct count.
