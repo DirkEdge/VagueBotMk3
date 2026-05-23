@@ -16,19 +16,19 @@ graph TD
     Vault[(Obsidian Vault)]
     Scheduler[Layer 4 tasks.loop Scheduler]
 
-    User -->|Sends Message / Mentions Bot| Bot
-    Bot -->|Immediate Acknowledge / Typing| User
-    Bot -->|Delegate to Worker Thread| Thread
-    Thread -->|Run Agent Loop| Qwen
-    Qwen -->|Call custom function| Tools
-    Tools -->|Read/Write markdown| Vault
-    Qwen -->|Return response text| Bot
-    Bot -->|Asynchronously edit reply| User
+    User -->|"Sends Message / Mentions Bot"| Bot
+    Bot -->|"Immediate Acknowledge / Typing"| User
+    Bot -->|"Delegate to Worker Thread"| Thread
+    Thread -->|"Run Agent Loop"| Qwen
+    Qwen -->|"Call custom function"| Tools
+    Tools -->|"Read/Write markdown"| Vault
+    Qwen -->|"Return response text"| Bot
+    Bot -->|"Asynchronously edit reply"| User
     
-    Scheduler -->|Cron Sweep (Morning, Night, Weekly, Health)| Thread
-    Thread -->|Run Scheduled Agent| Qwen
-    Qwen -->|Post Sweeps Summary| Bot
-    Bot -->|Send status| User
+    Scheduler -->|"Cron Sweep (Morning, Night, Weekly, Health)"| Thread
+    Thread -->|"Run Scheduled Agent"| Qwen
+    Qwen -->|"Post Sweeps Summary"| Bot
+    Bot -->|"Send status"| User
 ```
 
 ---
