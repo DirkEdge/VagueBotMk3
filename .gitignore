@@ -1,0 +1,19 @@
+# Local Environment Variables
+.env
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+
+# Python Cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Temporary Test Vaults
+test_vault_verify/
+
+# Logs
+*.log
