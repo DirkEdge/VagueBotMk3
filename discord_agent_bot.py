@@ -4,6 +4,7 @@ import json
 import asyncio
 import datetime
 import logging
+import time
 from dotenv import load_dotenv
 
 import discord
@@ -160,8 +161,11 @@ def get_history_with_system_context(channel_id):
 
 def sync_agent_run(agent_instance, messages_list, placeholder=None, bot_loop=None) -> str:
     """Synchronous function to consume the agent's runner generator. Runs safely in a background thread."""
+    logger.info(f"sync_agent_run: starting execution. Messages payload count: {len(messages_list)}")
     bot_response_content = "I encountered an issue processing your request."
     last_status = ""
+    last_update_time = 0.0
+    
     try:
         for response in agent_instance.run(messages=messages_list):
             if not response:
@@ -172,7 +176,9 @@ def sync_agent_run(agent_instance, messages_list, placeholder=None, bot_loop=Non
             fn_call = curr_msg.get('function_call', None) if isinstance(curr_msg, dict) else getattr(curr_msg, 'function_call', None)
             
             status_text = ""
+            is_tool_call = False
             if fn_call:
+                is_tool_call = True
                 tool_name = ""
                 if isinstance(fn_call, dict):
                     tool_name = fn_call.get('name', '')
@@ -189,12 +195,19 @@ def sync_agent_run(agent_instance, messages_list, placeholder=None, bot_loop=Non
                 status_text = "🧠 *Parsing vault context...*"
                 
             if status_text != last_status:
-                logger.info(f"Agent Status: {status_text}")
-                last_status = status_text
-                
-                # Update placeholder in Discord thread-safely
-                if placeholder and bot_loop:
-                    asyncio.run_coroutine_threadsafe(placeholder.edit(content=status_text), bot_loop)
+                now = time.time()
+                # Bypass throttle for tool calls or first update, otherwise throttle to 4.0 seconds
+                if is_tool_call or (now - last_update_time >= 4.0) or not last_status:
+                    logger.info(f"Agent Status (Updating Discord): {status_text}")
+                    last_status = status_text
+                    last_update_time = now
+                    
+                    # Update placeholder in Discord thread-safely
+                    if placeholder and bot_loop:
+                        asyncio.run_coroutine_threadsafe(placeholder.edit(content=status_text), bot_loop)
+                else:
+                    # Log internally but do not edit Discord placeholder to avoid rate limits
+                    logger.debug(f"Agent Status (Throttled): {status_text}")
                     
             bot_response_content = content
     except Exception as e:
@@ -473,7 +486,11 @@ async def run_agent_loop(message: discord.Message, placeholder: discord.Message,
             agent = get_agent_for_channel(channel_id)
             
             # Run Qwen-Agent generator in a separate worker thread to prevent event loop deadlocks with our async channel tools
+            start_time = asyncio.get_event_loop().time()
+            logger.info(f"run_agent_loop: starting agent for channel {channel_id} with history size {len(history_to_send)}")
             bot_response_content = await asyncio.to_thread(sync_agent_run, agent, history_to_send, placeholder, bot.loop)
+            elapsed = asyncio.get_event_loop().time() - start_time
+            logger.info(f"run_agent_loop: finished agent for channel {channel_id} in {elapsed:.3f}s. Response size: {len(bot_response_content)}")
                 
             # Update history with bot response
             channel_histories[channel_id].append({'role': 'assistant', 'content': bot_response_content})

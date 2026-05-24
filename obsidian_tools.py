@@ -1,12 +1,18 @@
 import os
 import json
 import re
+import time
+import logging
+import concurrent.futures
 from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
 import json5
 
 from qwen_agent.tools.base import BaseTool, register_tool
+
+# Setup logger for tools
+logger = logging.getLogger('DiscordSecondBrain.Tools')
 
 # Load environment variables
 load_dotenv()
@@ -37,13 +43,21 @@ def find_channel(bot, channel_name_or_id: str):
     return None
 
 def run_async_on_bot(coro):
-    """Execute an async coroutine on the Discord bot's main loop and block for the result."""
+    """Execute an async coroutine on the Discord bot's main loop and block for the result with a 15.0s timeout."""
     global DISCORD_BOT
     if not DISCORD_BOT:
         raise ValueError("Discord bot is not initialized in obsidian_tools.")
     import asyncio
+    
+    logger.info(f"run_async_on_bot: scheduling coroutine {coro} on bot loop")
     future = asyncio.run_coroutine_threadsafe(coro, DISCORD_BOT.loop)
-    return future.result()
+    try:
+        return future.result(timeout=15.0)
+    except concurrent.futures.TimeoutError as te:
+        logger.error(f"run_async_on_bot: timeout executing coroutine {coro} (15.0s limit exceeded)", exc_info=True)
+        future.cancel()
+        raise TimeoutError("Discord Gateway request timed out (15.0s limit).") from te
+
 
 
 def get_absolute_path(relative_path: str) -> Path:
@@ -115,17 +129,23 @@ class VaultReader(BaseTool):
     }]
 
     def call(self, params: str, **kwargs) -> str:
+        logger.info(f"VaultReader called with params: {params}")
+        start_time = time.time()
         try:
             args = json5.loads(params)
             file_path = args.get('file_path')
             abs_path = get_absolute_path(file_path)
             
             if not abs_path.exists():
+                logger.warning(f"VaultReader: File '{file_path}' does not exist.")
                 return json.dumps({"status": "error", "message": f"File '{file_path}' does not exist."}, ensure_ascii=False)
             
             content = abs_path.read_text(encoding="utf-8")
+            elapsed = time.time() - start_time
+            logger.info(f"VaultReader: read file '{file_path}' successfully in {elapsed:.3f}s")
             return json.dumps({"status": "success", "content": content}, ensure_ascii=False)
         except Exception as e:
+            logger.error(f"Error in VaultReader: {e}", exc_info=True)
             return json.dumps({"status": "error", "message": str(e)}, ensure_ascii=False)
 
 
@@ -145,6 +165,8 @@ class VaultWriter(BaseTool):
     }]
 
     def call(self, params: str, **kwargs) -> str:
+        logger.info(f"VaultWriter called with params: {params}")
+        start_time = time.time()
         try:
             args = json5.loads(params)
             file_path = args.get('file_path')
@@ -153,9 +175,11 @@ class VaultWriter(BaseTool):
             # Enforce validation
             validation_errors = validate_ai_first(content, file_path)
             if validation_errors:
+                err_msg = "AI-First Vault Validation Failed:\n" + "\n".join(f"- {err}" for err in validation_errors)
+                logger.warning(f"VaultWriter validation failure for '{file_path}': {err_msg}")
                 return json.dumps({
                     "status": "error",
-                    "message": "AI-First Vault Validation Failed:\n" + "\n".join(f"- {err}" for err in validation_errors) + "\nPlease ensure the note content includes: YAML frontmatter with 'ai-first: true', 'type', 'date' (YYYY-MM-DD), 'tags', and a '## For future Claude' preamble at the top."
+                    "message": err_msg + "\nPlease ensure the note content includes: YAML frontmatter with 'ai-first: true', 'type', 'date' (YYYY-MM-DD), 'tags', and a '## For future Claude' preamble at the top."
                 }, ensure_ascii=False)
             
             abs_path = get_absolute_path(file_path)
@@ -176,10 +200,13 @@ class VaultWriter(BaseTool):
                     else:
                         log_file.write_text(f"---\ndate: {today_str}\ntype: log\ntags: [log]\nai-first: true\n---\n## For future Claude\nOperation log for {today_str}.\n\n" + log_entry, encoding="utf-8")
             except Exception as log_error:
-                print(f"Error logging vault write operation: {log_error}")
-
+                logger.error(f"Error logging vault write operation: {log_error}", exc_info=True)
+ 
+            elapsed = time.time() - start_time
+            logger.info(f"VaultWriter: wrote '{file_path}' successfully in {elapsed:.3f}s")
             return json.dumps({"status": "success", "message": f"Successfully wrote to '{file_path}'."}, ensure_ascii=False)
         except Exception as e:
+            logger.error(f"Error in VaultWriter: {e}", exc_info=True)
             return json.dumps({"status": "error", "message": str(e)}, ensure_ascii=False)
 
 
@@ -194,6 +221,8 @@ class VaultSearcher(BaseTool):
     }]
 
     def call(self, params: str, **kwargs) -> str:
+        logger.info(f"VaultSearcher called with params: {params}")
+        start_time = time.time()
         try:
             args = json5.loads(params)
             query = args.get('query').lower()
@@ -235,8 +264,11 @@ class VaultSearcher(BaseTool):
                     if len(results) >= 20:  # Cap results
                         break
             
+            elapsed = time.time() - start_time
+            logger.info(f"VaultSearcher: search for '{query}' completed in {elapsed:.3f}s, found {len(results)} results")
             return json.dumps({"status": "success", "results": results}, ensure_ascii=False)
         except Exception as e:
+            logger.error(f"Error in VaultSearcher: {e}", exc_info=True)
             return json.dumps({"status": "error", "message": str(e)}, ensure_ascii=False)
 
 
@@ -251,6 +283,8 @@ class VaultLister(BaseTool):
     }]
 
     def call(self, params: str, **kwargs) -> str:
+        logger.info(f"VaultLister called with params: {params}")
+        start_time = time.time()
         try:
             args = json5.loads(params)
             directory = args.get('directory', '').strip("/\\")
@@ -270,8 +304,11 @@ class VaultLister(BaseTool):
                 rel = str(md.relative_to(VAULT_ROOT)).replace("\\", "/")
                 files.append(rel)
                 
+            elapsed = time.time() - start_time
+            logger.info(f"VaultLister: listed {len(files)} files in '{directory}' in {elapsed:.3f}s")
             return json.dumps({"status": "success", "files": files}, ensure_ascii=False)
         except Exception as e:
+            logger.error(f"Error in VaultLister: {e}", exc_info=True)
             return json.dumps({"status": "error", "message": str(e)}, ensure_ascii=False)
 
 
@@ -281,6 +318,8 @@ class VaultHealthChecker(BaseTool):
     parameters = []
 
     def call(self, params: str, **kwargs) -> str:
+        logger.info(f"VaultHealthChecker called with params: {params}")
+        start_time = time.time()
         try:
             # We import and call the vault_health run_health_check function
             # Since vault_health.py is in obsidian-second-brain-main/scripts/vault_health.py,
@@ -292,8 +331,11 @@ class VaultHealthChecker(BaseTool):
             
             import vault_health
             result = vault_health.run_health_check(VAULT_ROOT)
+            elapsed = time.time() - start_time
+            logger.info(f"VaultHealthChecker: completed health check in {elapsed:.3f}s")
             return json.dumps({"status": "success", "report": result}, ensure_ascii=False)
         except Exception as e:
+            logger.error(f"Error in VaultHealthChecker: {e}", exc_info=True)
             return json.dumps({"status": "error", "message": str(e)}, ensure_ascii=False)
 
 
@@ -303,6 +345,8 @@ class DiscordChannelLister(BaseTool):
     parameters = []
 
     def call(self, params: str, **kwargs) -> str:
+        logger.info(f"DiscordChannelLister called with params: {params}")
+        start_time = time.time()
         try:
             global DISCORD_BOT
             if not DISCORD_BOT:
@@ -316,8 +360,11 @@ class DiscordChannelLister(BaseTool):
                         "channel_name": channel.name,
                         "channel_id": str(channel.id)
                     })
+            elapsed = time.time() - start_time
+            logger.info(f"DiscordChannelLister: listed {len(channels)} channels in {elapsed:.3f}s")
             return json.dumps({"status": "success", "channels": channels}, ensure_ascii=False)
         except Exception as e:
+            logger.error(f"Error in DiscordChannelLister: {e}", exc_info=True)
             return json.dumps({"status": "error", "message": str(e)}, ensure_ascii=False)
 
 
@@ -337,6 +384,8 @@ class DiscordChannelReader(BaseTool):
     }]
 
     def call(self, params: str, **kwargs) -> str:
+        logger.info(f"DiscordChannelReader called with params: {params}")
+        start_time = time.time()
         try:
             global DISCORD_BOT
             if not DISCORD_BOT:
@@ -363,8 +412,11 @@ class DiscordChannelReader(BaseTool):
                 return msgs
                 
             history = run_async_on_bot(get_history(channel, limit))
+            elapsed = time.time() - start_time
+            logger.info(f"DiscordChannelReader: read {len(history)} messages from '{channel.name}' in {elapsed:.3f}s")
             return json.dumps({"status": "success", "channel": channel.name, "history": history}, ensure_ascii=False)
         except Exception as e:
+            logger.error(f"Error in DiscordChannelReader: {e}", exc_info=True)
             return json.dumps({"status": "error", "message": str(e)}, ensure_ascii=False)
 
 
@@ -384,6 +436,8 @@ class DiscordMessageSender(BaseTool):
     }]
 
     def call(self, params: str, **kwargs) -> str:
+        logger.info(f"DiscordMessageSender called with params: {params}")
+        start_time = time.time()
         try:
             global DISCORD_BOT
             if not DISCORD_BOT:
@@ -402,7 +456,10 @@ class DiscordMessageSender(BaseTool):
                 return m.id
                 
             msg_id = run_async_on_bot(send_msg(channel, content))
+            elapsed = time.time() - start_time
+            logger.info(f"DiscordMessageSender: sent message {msg_id} to '{channel.name}' in {elapsed:.3f}s")
             return json.dumps({"status": "success", "message_id": str(msg_id)}, ensure_ascii=False)
         except Exception as e:
+            logger.error(f"Error in DiscordMessageSender: {e}", exc_info=True)
             return json.dumps({"status": "error", "message": str(e)}, ensure_ascii=False)
 
