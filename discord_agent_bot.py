@@ -165,6 +165,7 @@ def sync_agent_run(agent_instance, messages_list, placeholder=None, bot_loop=Non
     bot_response_content = "I encountered an issue processing your request."
     last_status = ""
     last_update_time = 0.0
+    response = []
     
     try:
         for response in agent_instance.run(messages=messages_list):
@@ -210,10 +211,37 @@ def sync_agent_run(agent_instance, messages_list, placeholder=None, bot_loop=Non
                     logger.debug(f"Agent Status (Throttled): {status_text}")
                     
             bot_response_content = content
+            
+        # Extract successful file writes to append as a footer
+        vault_actions = []
+        if response:
+            for msg in response:
+                role = msg.get('role') if isinstance(msg, dict) else getattr(msg, 'role', '')
+                if role == 'function':
+                    name = msg.get('name') if isinstance(msg, dict) else getattr(msg, 'name', '')
+                    content = msg.get('content') if isinstance(msg, dict) else getattr(msg, 'content', '')
+                    try:
+                        parsed = json.loads(content)
+                        if parsed.get('status') == 'success':
+                            msg_text = parsed.get('message', '')
+                            if name == 'vault_write_file':
+                                if "'" in msg_text:
+                                    path_extracted = msg_text.split("'")[1]
+                                    vault_actions.append(f"Saved to `{path_extracted}`")
+                                else:
+                                    vault_actions.append(msg_text)
+                    except Exception:
+                        pass
+        if vault_actions:
+            unique_actions = list(dict.fromkeys(vault_actions))
+            actions_str = "\n".join(f"- {action}" for action in unique_actions)
+            bot_response_content += f"\n\n---\n📁 **Vault Updates:**\n{actions_str}"
+            
     except Exception as e:
         logger.error(f"Error in sync_agent_run: {e}")
         bot_response_content = f"Error in agent processing: {e}"
     return bot_response_content
+
 
 
 def get_agent_for_channel(channel_id):

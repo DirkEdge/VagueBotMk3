@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **Automated Vault Updates Footer:** Added automatic tracking of all successful vault write actions in `discord_agent_bot.py` (`sync_agent_run`). Appends a clean, markdown-formatted metadata footer displaying the relative file paths of all saved/created notes at the bottom of the bot's final Discord response, ensuring the user always knows where the files reside.
 - **Throttled Discord Placeholder Updates:** Implemented a coarse/throttled status update mechanism in `discord_agent_bot.py` (`sync_agent_run`) to prevent Discord API HTTP 429 rate limit errors. Updates are throttled to a minimum of 4.0 seconds for thinking states, while bypassing the throttle for tool calls to provide real-time, responsive status reporting without flooding the Discord API.
 - **Gateway Timeout Protection:** Implemented a 15.0-second thread-safe timeout on gateway calls via `run_async_on_bot` in `obsidian_tools.py` using `concurrent.futures.TimeoutError` to prevent background threads from hanging indefinitely when interacting with the Discord Gateway.
 - **Rich Telemetry & Exception Logging:** Added execution duration measurements, status tracking, payload telemetry, and robust exception traceback logging (`logger.error(..., exc_info=True)`) across all custom tools in `obsidian_tools.py`.
