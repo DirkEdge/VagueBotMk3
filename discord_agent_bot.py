@@ -98,7 +98,7 @@ obsidian_tools.DISCORD_BOT = bot  # Set the reference in tools
 @bot.command()
 async def ping(ctx):
     logger.info("Ping command triggered.")
-    await ctx.send("pong")
+    await ctx.reply("pong", mention_author=False)
 
 @bot.command()
 async def clear(ctx):
@@ -107,9 +107,9 @@ async def clear(ctx):
         channel_histories[channel_id] = []
         save_histories()
         logger.info(f"Cleared chat history for channel {channel_id}.")
-        await ctx.send("🧹 **Chat history cleared successfully.**")
+        await ctx.reply("🧹 **Chat history cleared successfully.**", mention_author=False)
     else:
-        await ctx.send("🧹 **No chat history found for this channel.**")
+        await ctx.reply("🧹 **No chat history found for this channel.**", mention_author=False)
 
 # File path for persistent chat histories
 HISTORY_FILE = os.path.join(os.path.dirname(__file__), "chat_history.json")
@@ -453,7 +453,7 @@ async def on_message(message: discord.Message):
     logger.info(f"Acknowledge message from {message.author}: sending placeholder in channel {channel_id}")
     # 1. Immediate Acknowledge: Send a tentative placeholder message
     try:
-        placeholder = await message.channel.send("🧠 *Thinking... parsing your vault context...*")
+        placeholder = await message.reply("🧠 *Thinking... parsing your vault context...*", mention_author=False)
     except Exception as e:
         logger.error(f"Failed to send placeholder message: {e}")
         return
@@ -489,7 +489,7 @@ async def run_agent_loop(message: discord.Message, placeholder: discord.Message,
                 chunks = [bot_response_content[i:i+1900] for i in range(0, len(bot_response_content), 1900)]
                 await placeholder.edit(content=chunks[0])
                 for chunk in chunks[1:]:
-                    await message.channel.send(chunk)
+                    await message.reply(chunk, mention_author=False)
             else:
                 await placeholder.edit(content=bot_response_content)
                 
