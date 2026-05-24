@@ -158,13 +158,45 @@ def get_history_with_system_context(channel_id):
             logger.error(f"Error loading _CLAUDE.md: {e}")
     return history
 
-def sync_agent_run(agent_instance, messages_list) -> str:
+def sync_agent_run(agent_instance, messages_list, placeholder=None, bot_loop=None) -> str:
     """Synchronous function to consume the agent's runner generator. Runs safely in a background thread."""
     bot_response_content = "I encountered an issue processing your request."
+    last_status = ""
     try:
         for response in agent_instance.run(messages=messages_list):
-            if response:
-                bot_response_content = response[-1].get('content', '') if isinstance(response[-1], dict) else getattr(response[-1], 'content', '')
+            if not response:
+                continue
+                
+            curr_msg = response[-1]
+            content = curr_msg.get('content', '') if isinstance(curr_msg, dict) else getattr(curr_msg, 'content', '')
+            fn_call = curr_msg.get('function_call', None) if isinstance(curr_msg, dict) else getattr(curr_msg, 'function_call', None)
+            
+            status_text = ""
+            if fn_call:
+                tool_name = ""
+                if isinstance(fn_call, dict):
+                    tool_name = fn_call.get('name', '')
+                else:
+                    tool_name = getattr(fn_call, 'name', '')
+                status_text = f"⚙️ *Calling vault tool: `{tool_name}`...*"
+            elif content:
+                # Strip Markdown block formatting from status messages for readability
+                snippet = content.strip().replace("*", "").replace("_", "").split('\n')[-1]
+                if len(snippet) > 80:
+                    snippet = snippet[:80] + "..."
+                status_text = f"🧠 *Thinking: {snippet}*"
+            else:
+                status_text = "🧠 *Parsing vault context...*"
+                
+            if status_text != last_status:
+                logger.info(f"Agent Status: {status_text}")
+                last_status = status_text
+                
+                # Update placeholder in Discord thread-safely
+                if placeholder and bot_loop:
+                    asyncio.run_coroutine_threadsafe(placeholder.edit(content=status_text), bot_loop)
+                    
+            bot_response_content = content
     except Exception as e:
         logger.error(f"Error in sync_agent_run: {e}")
         bot_response_content = f"Error in agent processing: {e}"
@@ -441,7 +473,7 @@ async def run_agent_loop(message: discord.Message, placeholder: discord.Message,
             agent = get_agent_for_channel(channel_id)
             
             # Run Qwen-Agent generator in a separate worker thread to prevent event loop deadlocks with our async channel tools
-            bot_response_content = await asyncio.to_thread(sync_agent_run, agent, history_to_send)
+            bot_response_content = await asyncio.to_thread(sync_agent_run, agent, history_to_send, placeholder, bot.loop)
                 
             # Update history with bot response
             channel_histories[channel_id].append({'role': 'assistant', 'content': bot_response_content})
