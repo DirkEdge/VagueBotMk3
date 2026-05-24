@@ -5,6 +5,6 @@ Write-Host "Invoking kill_bot.ps1..."
 . .\kill_bot.ps1
 
 Write-Host "Starting discord_agent_bot.py in the background..."
-Start-Process python -ArgumentList "-u", "discord_agent_bot.py" -WorkingDirectory "c:\Users\Suici\Desktop\VagueBotMk3" -RedirectStandardOutput "c:\Users\Suici\Desktop\VagueBotMk3\bot_output.log" -RedirectStandardError "c:\Users\Suici\Desktop\VagueBotMk3\bot_error.log" -WindowStyle Hidden
+Start-Process "cmd.exe" -ArgumentList "/c python -u discord_agent_bot.py > bot_output.log 2>&1" -WorkingDirectory "c:\Users\Suici\Desktop\VagueBotMk3" -WindowStyle Hidden
 
 Write-Host "Bot started successfully. Standard output is redirected to bot_output.log, standard error to bot_error.log."

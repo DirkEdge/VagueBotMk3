@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **Migration to Qwen2.5-Coder-7B-Instruct:** Migrated the bot's central execution model from Qwen3.5-9B to `Qwen/Qwen2.5-Coder-7B-Instruct` to resolve local 8k context window VRAM constraints on the RTX 4060.
+- **Prompt-Based Parsing Reversion:** Set `LLM_USE_RAW_API=False` to leverage Qwen-Agent's built-in optimized parsing logic for Qwen2.5 models.
+- **Context Window Extension:** Configured `generate_cfg` with `max_input_tokens: 15000` to expand the active prompt memory window in the agent's internal configuration.
+- **Strict Coder Mandates Synchronization:** Injected the `STRICT CODER EXECUTION MANDATES` (Identity, Fetch-First, Truth/Changelog Receipts, AI-First Rules) into `discord_agent_bot.py` (`SYSTEM_MESSAGE`) and the vault's root operating guide `_CLAUDE.md`.
 - **Automated Vault Updates Footer:** Added automatic tracking of all successful vault write actions in `discord_agent_bot.py` (`sync_agent_run`). Appends a clean, markdown-formatted metadata footer displaying the relative file paths of all saved/created notes at the bottom of the bot's final Discord response, ensuring the user always knows where the files reside.
 - **Throttled Discord Placeholder Updates:** Implemented a coarse/throttled status update mechanism in `discord_agent_bot.py` (`sync_agent_run`) to prevent Discord API HTTP 429 rate limit errors. Updates are throttled to a minimum of 4.0 seconds for thinking states, while bypassing the throttle for tool calls to provide real-time, responsive status reporting without flooding the Discord API.
 - **Gateway Timeout Protection:** Implemented a 15.0-second thread-safe timeout on gateway calls via `run_async_on_bot` in `obsidian_tools.py` using `concurrent.futures.TimeoutError` to prevent background threads from hanging indefinitely when interacting with the Discord Gateway.
@@ -28,11 +32,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **Ollama model target naming in `.env`:** Corrected the `LLM_MODEL` setting from `Qwen/Qwen2.5-Coder-7B-Instruct` to `qwen2.5-coder:7b` to match the exact model name tagged on the local Ollama service and resolve 404 Model Not Found errors.
+- **Process launch environment in `restart_bot.ps1`:** Fixed the background process initialization to use `cmd.exe /c python -u` which guarantees standard output and error redirection and correct environment variable propagation.
 - **IDE Static Linter Errors:** Added `# type: ignore` comments to runtime path imports (`qwen_agent.agents`) to silence false-positive IDE static analysis imports warnings.
 - **Ollama model name configuration in `.env`:** Fixed the mismatch between the configured `LLM_MODEL=3.5:9b-ctx8k` and the actual Ollama tag name `qwen3.5:9b-ctx8k`, which caused Ollama to return a 404 Model Not Found error.
+
 - **Discord Bot routing and diagnostics:** Added a `!ping` test command to verify Gateway connectivity and message delivery. Added verbose logging in the `on_message` event handler to track incoming messages, and replaced `isinstance(message.channel, discord.DMChannel)` with the robust `message.guild is None` check to ensure DMs are correctly routed to the agent loop.
 - **`scripts/setup.sh` robustness:** four issues fixed together. Vault paths containing apostrophes or other shell metacharacters (`Joe's Notes`) no longer crash the installer - `eval echo` replaced with bash parameter substitution. `python` replaced with `python3` for compatibility with macOS 13+ and Ubuntu 22+ which don't ship a `python` symlink. All three `settings.json` writes are now atomic (`mv` instead of `cat … && rm`). The MCP setup prompt is skipped when stdin is not a terminal so `curl | bash` installs and CI don't hang.
-
 - **`vault_stats.py` people count:** now counts both `type: person` and `type: entity` in the People aggregate. Real vaults using either convention report the correct count.
 - **Log layout routing in all commands:** every `/obsidian-*` command that reads or appends to the operation log now explicitly detects the vault layout (`Logs/YYYY-MM-DD.md` vs monolithic `log.md`) and uses the correct file and format. Previously, commands hardcoded `log.md` with the old `## [YYYY-MM-DD]` section-header format, which would write incorrectly formatted entries on modernized vaults.
 - **`vault_stats.py` folder exclusions case-insensitive:** `EXCLUDED_FOLDERS` comparison now uses `part.lower()`, so `templates/` and `Templates/` are both excluded. Added `raw/` to the exclusion set (immutable source folder convention).
