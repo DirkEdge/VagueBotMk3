@@ -384,12 +384,6 @@ async def on_message(message: discord.Message):
                 f"[is_dm={is_dm}, is_mentioned={is_mentioned}, is_log_channel={is_log_channel}, "
                 f"is_reply_to={is_reply_to_bot}, is_chat_channel={is_chat_channel}, is_session={is_session_continuation}] -> should_respond={should_respond}")
 
-    if not should_respond:
-        return
-
-    # Update active session timestamp
-    active_sessions[message.channel.id] = (message.author.id, datetime.datetime.now())
-
     # Process conversational message in the agentic loop
     channel_id = message.channel.id
     
@@ -403,6 +397,27 @@ async def on_message(message: discord.Message):
         if not user_prompt:
             user_prompt = "Hello"  # Default prompt if it was just a raw mention
 
+    # --- 1. Passive Listening (For EVERY message) ---
+    # Append the formatted message to the channel history so the bot knows what is being discussed
+    if channel_id not in channel_histories:
+        channel_histories[channel_id] = []
+        
+    channel_histories[channel_id].append({'role': 'user', 'content': f"{message.author.name}: {user_prompt}"})
+    
+    # Prune conversational history to the last 30 messages to avoid context window overflow
+    if len(channel_histories[channel_id]) > 30:
+        channel_histories[channel_id] = channel_histories[channel_id][-30:]
+        
+    # Save the updated history to disk
+    save_histories()
+
+    # --- 2. Active Execution (Only if called) ---
+    if not should_respond:
+        return
+
+    # Update active session timestamp
+    active_sessions[message.channel.id] = (message.author.id, datetime.datetime.now())
+
     logger.info(f"Acknowledge message from {message.author}: sending placeholder in channel {channel_id}")
     # 1. Immediate Acknowledge: Send a tentative placeholder message
     try:
@@ -412,27 +427,13 @@ async def on_message(message: discord.Message):
         return
     
     # 2. Push processing to background task to keep WebSocket connection active
-    logger.info(f"Dispatching run_agent_loop as background task for channel {channel_id} with prompt: {user_prompt!r}")
-    asyncio.create_task(run_agent_loop(message, placeholder, channel_id, user_prompt))
+    logger.info(f"Dispatching run_agent_loop as background task for channel {channel_id}")
+    asyncio.create_task(run_agent_loop(message, placeholder, channel_id))
 
-async def run_agent_loop(message: discord.Message, placeholder: discord.Message, channel_id: int, user_prompt: str):
+async def run_agent_loop(message: discord.Message, placeholder: discord.Message, channel_id: int):
     # Use context manager to trigger typing across both DMs and Guild text channels safely
     async with message.channel.typing():
         try:
-            # Load or initialize chat history for this channel
-            if channel_id not in channel_histories:
-                channel_histories[channel_id] = []
-                
-            # Append user message to history
-            channel_histories[channel_id].append({'role': 'user', 'content': user_prompt})
-            
-            # Prune conversational history to the last 30 messages to avoid context window overflow
-            if len(channel_histories[channel_id]) > 30:
-                channel_histories[channel_id] = channel_histories[channel_id][-30:]
-                
-            # Save history to disk
-            save_histories()
-            
             # Rebuild history list by prepending the latest vault system context
             history_to_send = get_history_with_system_context(channel_id)
             
