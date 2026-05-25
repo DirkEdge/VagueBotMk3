@@ -107,7 +107,7 @@ obsidian_tools.DISCORD_BOT = bot  # Set the reference in tools
 @bot.command()
 async def ping(ctx):
     logger.info("Ping command triggered.")
-    await ctx.send("pong")
+    await ctx.send("🏓 **Pong!**")
 
 @bot.command()
 async def clear(ctx):
@@ -115,10 +115,10 @@ async def clear(ctx):
     if channel_id in channel_histories:
         channel_histories[channel_id] = []
         save_histories()
-        logger.info(f"Cleared chat history for channel {channel_id}.")
-        await ctx.send("🧹 **Chat history cleared successfully.**")
+        logger.info(f"Cleared agent context for channel {channel_id}.")
+        await ctx.send("🧹 **Agent context cleared.** Ready for a new conversation!")
     else:
-        await ctx.send("🧹 **No chat history found for this channel.**")
+        await ctx.send("🧹 **No active agent context found for this channel.**")
 
 # File path for persistent chat histories
 HISTORY_FILE = os.path.join(os.path.dirname(__file__), "chat_history.json")
