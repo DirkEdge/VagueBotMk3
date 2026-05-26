@@ -229,40 +229,48 @@ class VaultSearcher(BaseTool):
             results = []
             
             # Simple content and title search
-            for md in VAULT_ROOT.rglob("*.md"):
-                # Exclude internal / trash directories
-                parts = md.relative_to(VAULT_ROOT).parts
-                if any(p in {".obsidian", ".trash", "_trash", ".git", "Templates"} for p in parts):
-                    continue
+            # Performance Optimization (⚡ Bolt): Replaced O(N) rglob with os.walk and in-place pruning.
+            # Avoids traversing large ignored directories like .git or .obsidian.
+            exclude_dirs = {".obsidian", ".trash", "_trash", ".git", "Templates"}
+            for root, dirs, filenames in os.walk(VAULT_ROOT):
+                # Prune excluded directories in-place to stop traversal
+                dirs[:] = [d for d in dirs if d not in exclude_dirs]
                 
-                rel = str(md.relative_to(VAULT_ROOT)).replace("\\", "/")
-                content = md.read_text(encoding="utf-8", errors="replace")
-                
-                matched = False
-                excerpt = ""
-                if query in md.stem.lower():
-                    matched = True
-                    # Grab start of content as excerpt
-                    lines = content.split("\n")
-                    # skip frontmatter
-                    non_fm_lines = [l for l in lines if not l.startswith("---")][:5]
-                    excerpt = "Title match: " + " ".join(non_fm_lines)[:100]
-                elif query in content.lower():
-                    matched = True
-                    # Find a matching line
-                    for line in content.split("\n"):
-                        if query in line.lower():
-                            excerpt = line.strip()[:150]
+                for filename in filenames:
+                    if not filename.endswith(".md"):
+                        continue
+
+                    md = Path(root) / filename
+                    rel = str(md.relative_to(VAULT_ROOT)).replace("\\", "/")
+                    content = md.read_text(encoding="utf-8", errors="replace")
+
+                    matched = False
+                    excerpt = ""
+                    if query in md.stem.lower():
+                        matched = True
+                        # Grab start of content as excerpt
+                        lines = content.split("\n")
+                        # skip frontmatter
+                        non_fm_lines = [l for l in lines if not l.startswith("---")][:5]
+                        excerpt = "Title match: " + " ".join(non_fm_lines)[:100]
+                    elif query in content.lower():
+                        matched = True
+                        # Find a matching line
+                        for line in content.split("\n"):
+                            if query in line.lower():
+                                excerpt = line.strip()[:150]
+                                break
+
+                    if matched:
+                        results.append({
+                            "file_path": rel,
+                            "title": md.stem,
+                            "excerpt": excerpt
+                        })
+                        if len(results) >= 20:  # Cap results
                             break
-                
-                if matched:
-                    results.append({
-                        "file_path": rel,
-                        "title": md.stem,
-                        "excerpt": excerpt
-                    })
-                    if len(results) >= 20:  # Cap results
-                        break
+                if len(results) >= 20:
+                    break
             
             elapsed = time.time() - start_time
             logger.info(f"VaultSearcher: search for '{query}' completed in {elapsed:.3f}s, found {len(results)} results")
@@ -296,13 +304,29 @@ class VaultLister(BaseTool):
                     return json.dumps({"status": "error", "message": f"Directory '{directory}' does not exist."}, ensure_ascii=False)
             
             files = []
-            for md in target_dir.rglob("*.md"):
-                parts = md.relative_to(VAULT_ROOT).parts
-                if any(p in {".obsidian", ".trash", "_trash", ".git", "Templates"} for p in parts):
-                    continue
-                
-                rel = str(md.relative_to(VAULT_ROOT)).replace("\\", "/")
-                files.append(rel)
+            exclude_dirs = {".obsidian", ".trash", "_trash", ".git", "Templates"}
+
+            # Check if target_dir itself is within an excluded directory
+            is_excluded = False
+            try:
+                for part in target_dir.relative_to(VAULT_ROOT).parts:
+                    if part in exclude_dirs:
+                        is_excluded = True
+                        break
+            except ValueError:
+                pass # target_dir is not relative to VAULT_ROOT, handled earlier
+
+            if not is_excluded:
+                # Performance Optimization (⚡ Bolt): Replaced O(N) rglob with os.walk and in-place pruning.
+                # Avoids traversing large ignored directories like .git or .obsidian.
+                for root, dirs, filenames in os.walk(target_dir):
+                    dirs[:] = [d for d in dirs if d not in exclude_dirs]
+
+                    for filename in filenames:
+                        if filename.endswith(".md"):
+                            md = Path(root) / filename
+                            rel = str(md.relative_to(VAULT_ROOT)).replace("\\", "/")
+                            files.append(rel)
                 
             elapsed = time.time() - start_time
             logger.info(f"VaultLister: listed {len(files)} files in '{directory}' in {elapsed:.3f}s")
