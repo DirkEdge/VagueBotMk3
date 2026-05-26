@@ -1,0 +1,3 @@
+## 2024-05-26 - Asyncio to thread for file reads
+**Learning:** Synchronous file reads (like `Path.read_text()`) in an asyncio event loop can block the thread, leading to performance issues and unresponsive bots. Benchmarks showed that `asyncio.to_thread` reads files significantly faster than sync reads in this context without needing extra dependencies like `aiofiles`.
+**Action:** When performing heavy file IO or reads in `discord_agent_bot.py` or similar asyncio-driven files, always use `await asyncio.to_thread(path.read_text, encoding="utf-8")` to offload the operation to a background thread to prevent blocking the event loop.

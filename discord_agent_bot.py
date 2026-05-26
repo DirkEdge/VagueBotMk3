@@ -154,13 +154,14 @@ def save_histories():
     except Exception as e:
         logger.error(f"Error saving chat histories: {e}")
 
-def get_history_with_system_context(channel_id):
+async def get_history_with_system_context(channel_id):
     """Rebuild conversation history by prepending the latest vault metadata from _CLAUDE.md."""
     history = list(channel_histories.get(channel_id, []))
     claude_md_path = VAULT_ROOT / "_CLAUDE.md"
     if claude_md_path.exists():
         try:
-            claude_content = claude_md_path.read_text(encoding="utf-8")
+            # ⚡ Performance optimization: Offload heavy file reads to a background thread to avoid blocking the asyncio event loop.
+            claude_content = await asyncio.to_thread(claude_md_path.read_text, encoding="utf-8")
             system_content = f"Obsidian Vault Configuration (_CLAUDE.md):\n```markdown\n{claude_content}\n```"
             history.insert(0, {'role': 'system', 'content': system_content})
         except Exception as e:
@@ -516,7 +517,7 @@ async def run_agent_loop(message: discord.Message, placeholder: discord.Message,
     async with message.channel.typing():
         try:
             # Rebuild history list by prepending the latest vault system context
-            history_to_send = get_history_with_system_context(channel_id)
+            history_to_send = await get_history_with_system_context(channel_id)
             
             # Instantiate agent
             agent = get_agent_for_channel(channel_id)
