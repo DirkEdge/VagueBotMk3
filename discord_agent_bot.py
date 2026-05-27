@@ -157,6 +157,9 @@ def save_histories():
 def get_history_with_system_context(channel_id):
     """Rebuild conversation history by prepending the latest vault metadata from _CLAUDE.md."""
     history = list(channel_histories.get(channel_id, []))
+    # Ensure the conversational history starts with a user message to prevent Ollama 400 Bad Request errors
+    while history and history[0].get('role') != 'user':
+        history.pop(0)
     claude_md_path = VAULT_ROOT / "_CLAUDE.md"
     if claude_md_path.exists():
         try:
@@ -167,8 +170,13 @@ def get_history_with_system_context(channel_id):
             logger.error(f"Error loading _CLAUDE.md: {e}")
     return history
 
-def sync_agent_run(agent_instance, messages_list, placeholder=None, bot_loop=None) -> str:
+def sync_agent_run(agent_instance, messages_list, placeholder=None, bot_loop=None, user_id=None) -> str:
     """Synchronous function to consume the agent's runner generator. Runs safely in a background thread."""
+    # Populate the thread-local context for interactive gate checks
+    import obsidian_tools
+    obsidian_tools.thread_local.message = placeholder
+    obsidian_tools.thread_local.user_id = user_id
+
     logger.info(f"sync_agent_run: starting execution. Messages payload count: {len(messages_list)}")
     bot_response_content = "I encountered an issue processing your request."
     last_status = ""
@@ -248,6 +256,10 @@ def sync_agent_run(agent_instance, messages_list, placeholder=None, bot_loop=Non
     except Exception as e:
         logger.error(f"Error in sync_agent_run: {e}")
         bot_response_content = f"Error in agent processing: {e}"
+    finally:
+        # Clean up the thread-local context on exit
+        obsidian_tools.thread_local.message = None
+        obsidian_tools.thread_local.user_id = None
     return bot_response_content
 
 
@@ -524,7 +536,7 @@ async def run_agent_loop(message: discord.Message, placeholder: discord.Message,
             # Run Qwen-Agent generator in a separate worker thread to prevent event loop deadlocks with our async channel tools
             start_time = asyncio.get_event_loop().time()
             logger.info(f"run_agent_loop: starting agent for channel {channel_id} with history size {len(history_to_send)}")
-            bot_response_content = await asyncio.to_thread(sync_agent_run, agent, history_to_send, placeholder, bot.loop)
+            bot_response_content = await asyncio.to_thread(sync_agent_run, agent, history_to_send, placeholder, bot.loop, message.author.id)
             elapsed = asyncio.get_event_loop().time() - start_time
             logger.info(f"run_agent_loop: finished agent for channel {channel_id} in {elapsed:.3f}s. Response size: {len(bot_response_content)}")
                 

@@ -133,6 +133,14 @@ class NousFnCallPrompt(BaseFnCallPrompt):
                 if item_type != 'text':  # multimodal
                     new_content.append(item)
                     continue
+
+                import re
+                # Normalize various tags (json, toolCall, tool_call, tool_calls, tools, tool, functionCall, function-call, function_call, request, call, execute) and strip code fences case-insensitively
+                item_text = re.sub(r'<(?:json|toolCall|tool_call|tool_calls|tools|tool|functionCall|function-call|function_call|request|call|execute)>', '<tool_call>', item_text, flags=re.IGNORECASE)
+                item_text = re.sub(r'</(?:json|toolCall|tool_call|tool_calls|tools|tool|functionCall|function-call|function_call|request|call|execute)>', '</tool_call>', item_text, flags=re.IGNORECASE)
+                item_text = re.sub(r'```[a-z]*\s*(<tool_call>)', r'\1', item_text, flags=re.IGNORECASE)
+                item_text = re.sub(r'(</tool_call>)\s*```', r'\1', item_text, flags=re.IGNORECASE)
+
                 # Do not parse <tool_call> in thought!!!
                 if '<think>' in item_text:
                     thought_in_content = True

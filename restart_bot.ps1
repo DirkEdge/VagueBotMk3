@@ -1,6 +1,5 @@
 # restart_bot.ps1
-# Terminate exist
-ing bot processes and launch the bot in the background, redirecting standard output and error.
+# Terminate existing bot processes and launch the bot in the background, redirecting standard output and error.
 
 Write-Host "Invoking kill_bot.ps1..."
 . .\kill_bot.ps1
