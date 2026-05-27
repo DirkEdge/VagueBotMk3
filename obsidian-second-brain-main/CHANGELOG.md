@@ -8,7 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **Auto-Approval Mode Configuration:** Added an `AUTO_APPROVE` environment variable toggle (`True`/`False`), enabling the agent to execute high-stakes tools (like `VaultWriter` and `DiscordMessageSender`) autonomously without blocking for manual button approvals in Discord.
 - **Migration to Qwen2.5-Coder-7B-Instruct:** Migrated the bot's central execution model from Qwen3.5-9B to `Qwen/Qwen2.5-Coder-7B-Instruct` to resolve local 8k context window VRAM constraints on the RTX 4060.
+
 - **Prompt-Based Parsing Reversion:** Set `LLM_USE_RAW_API=False` to leverage Qwen-Agent's built-in optimized parsing logic for Qwen2.5 models.
 - **Context Window Extension:** Configured `generate_cfg` with `max_input_tokens: 15000` to expand the active prompt memory window in the agent's internal configuration.
 - **Strict Coder Mandates Synchronization:** Injected the `STRICT CODER EXECUTION MANDATES` (Identity, Fetch-First, Truth/Changelog Receipts, AI-First Rules) into `discord_agent_bot.py` (`SYSTEM_MESSAGE`) and the vault's root operating guide `_CLAUDE.md`.

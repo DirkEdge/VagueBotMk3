@@ -94,8 +94,14 @@ async def _async_ask_user_with_buttons(bot, message: discord.Message, user_id: i
 
 def wait_for_user_approval_sync(tool_name: str, kwargs: dict):
     """Blocks the background thread safely until the user clicks a UI button."""
+    auto_approve = os.getenv("AUTO_APPROVE", "False").lower() in ("true", "1", "yes")
+    if auto_approve:
+        logger.info(f"Auto-approve enabled: automatically approving execution of {tool_name}")
+        return True, None
+
     message = getattr(thread_local, 'message', None)
     user_id = getattr(thread_local, 'user_id', None)
+
     
     # Fail-open for automated background jobs (morning sweep, etc.) that have no user context
     if not message or not user_id or getattr(sys.modules[__name__], 'DISCORD_BOT', None) is None:
