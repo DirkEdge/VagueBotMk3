@@ -5,6 +5,8 @@ import asyncio
 import datetime
 import logging
 import time
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
 
 import discord
@@ -125,6 +127,8 @@ HISTORY_FILE = os.path.join(os.path.dirname(__file__), "chat_history.json")
 
 # Map of channel_id -> list of conversational messages (excluding system messages)
 channel_histories = {}
+# Use a single-worker ThreadPoolExecutor to guarantee FIFO ordering of saves
+history_executor = ThreadPoolExecutor(max_workers=1)
 
 # Active conversation session tracking (channel_id -> (last_user_id, last_timestamp))
 active_sessions = {}
@@ -145,14 +149,28 @@ def load_histories():
     else:
         channel_histories = {}
 
-def save_histories():
+def _save_histories_worker(to_save):
+    """Background worker to save history without blocking the event loop."""
     try:
-        # Convert keys to strings for JSON serialization
-        to_save = {str(k): v for k, v in channel_histories.items()}
         with open(HISTORY_FILE, "w", encoding="utf-8") as f:
             json.dump(to_save, f, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.error(f"Error saving chat histories: {e}")
+
+def save_histories():
+    """
+    Takes a snapshot of channel_histories and dispatches the synchronous
+    file I/O to a background thread using a single-worker ThreadPoolExecutor.
+    This prevents blocking the discord.py async event loop and guarantees
+    FIFO ordering of writes to avoid data loss from race conditions.
+    """
+    try:
+        # Take a snapshot of the current state on the main thread
+        to_save = {str(k): list(v) for k, v in channel_histories.items()}
+        # Submit the write task to the single-worker executor for ordered processing
+        history_executor.submit(_save_histories_worker, to_save)
+    except Exception as e:
+        logger.error(f"Error starting history save thread: {e}")
 
 def get_history_with_system_context(channel_id):
     """Rebuild conversation history by prepending the latest vault metadata from _CLAUDE.md."""

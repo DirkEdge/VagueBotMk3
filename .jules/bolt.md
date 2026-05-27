@@ -1,0 +1,3 @@
+## 2024-05-28 - Blocking Event Loop with State Saving
+**Learning:** In a passive-listening Discord bot, synchronous disk I/O (like `json.dump`) inside the message handler or simple functions like `save_histories()` will block the `discord.py` async event loop, causing severe lag for all other events and background tasks on busy servers.
+**Action:** When a bot needs to save a small state to disk on every message, take a quick snapshot (e.g. dict-copy) of the state on the main thread and dispatch the actual file writing to a background thread using `threading.Thread`, utilizing a `threading.Lock()` to prevent file corruption from concurrent writes.
