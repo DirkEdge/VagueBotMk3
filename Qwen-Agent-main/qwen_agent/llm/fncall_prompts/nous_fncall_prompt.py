@@ -141,6 +141,32 @@ class NousFnCallPrompt(BaseFnCallPrompt):
                 item_text = re.sub(r'```[a-z]*\s*(<tool_call>)', r'\1', item_text, flags=re.IGNORECASE)
                 item_text = re.sub(r'(</tool_call>)\s*```', r'\1', item_text, flags=re.IGNORECASE)
 
+                # Auto-wrap raw JSON or code-fenced JSON that lacks <tool_call> tags
+                if '<tool_call>' not in item_text:
+                    def wrap_json_code_block(match):
+                        code_content = match.group(1).strip()
+                        try:
+                            parsed = json5.loads(code_content)
+                            if isinstance(parsed, dict) and 'name' in parsed and 'arguments' in parsed:
+                                return f"<tool_call>\n{code_content}\n</tool_call>"
+                        except Exception:
+                            pass
+                        return match.group(0)
+                    item_text = re.sub(r'```[a-z]*\s*(.*?)\s*```', wrap_json_code_block, item_text, flags=re.DOTALL | re.IGNORECASE)
+
+                if '<tool_call>' not in item_text:
+                    first_brace = item_text.find('{')
+                    last_brace = item_text.rfind('}')
+                    if first_brace >= 0 and last_brace > first_brace:
+                        candidate = item_text[first_brace:last_brace+1]
+                        try:
+                            parsed = json5.loads(candidate)
+                            if isinstance(parsed, dict) and 'name' in parsed and 'arguments' in parsed:
+                                item_text = item_text[:first_brace] + f"<tool_call>\n{candidate}\n</tool_call>" + item_text[last_brace+1:]
+                        except Exception:
+                            pass
+
+
                 # Do not parse <tool_call> in thought!!!
                 if '<think>' in item_text:
                     thought_in_content = True

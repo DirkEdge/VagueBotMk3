@@ -128,7 +128,7 @@ channel_histories = {}
 
 # Active conversation session tracking (channel_id -> (last_user_id, last_timestamp))
 active_sessions = {}
-SESSION_TIMEOUT_SECONDS = 300  # 5 minutes
+SESSION_TIMEOUT_SECONDS = 600  # 10 minutes
 
 def load_histories():
     global channel_histories
@@ -495,7 +495,13 @@ async def on_message(message: discord.Message):
     if channel_id not in channel_histories:
         channel_histories[channel_id] = []
         
-    channel_histories[channel_id].append({'role': 'user', 'content': f"{message.author.name}: {user_prompt}"})
+    import re
+    # Clean username to conform to standard LLM name requirements: ^[a-zA-Z0-9_-]+$
+    author_name = re.sub(r'[^a-zA-Z0-9_-]', '', message.author.name)
+    if not author_name:
+        author_name = 'user'
+    channel_histories[channel_id].append({'role': 'user', 'content': user_prompt, 'name': author_name})
+
     
     # Prune conversational history to the last 30 messages to avoid context window overflow
     if len(channel_histories[channel_id]) > 30:
