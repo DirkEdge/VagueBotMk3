@@ -1,0 +1,3 @@
+## 2025-02-18 - Offloading synchronous chat history saving safely
+**Learning:** In a pure Python async Discord bot context where state is sequentially managed (like appending to a chat history JSON), using a single-worker `concurrent.futures.ThreadPoolExecutor` perfectly avoids main event loop blocking without requiring external async I/O libraries (like `aiofiles`). The single worker ensures thread-safety and FIFO ordering of disk writes organically.
+**Action:** Always prefer offloading synchronous JSON serializations and disk I/O in Discord event handlers (`on_message`) to a single-worker ThreadPoolExecutor rather than risking main thread lag on high-traffic nodes, preserving responsiveness.

@@ -1,10 +1,12 @@
 import os
 import sys
 import json
+import re
 import asyncio
 import datetime
 import logging
 import time
+import concurrent.futures
 from dotenv import load_dotenv
 
 import discord
@@ -145,14 +147,24 @@ def load_histories():
     else:
         channel_histories = {}
 
-def save_histories():
+# Use a single-worker thread pool to ensure thread safety and FIFO execution of disk I/O
+_save_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+def _save_histories_sync(histories_snapshot):
     try:
-        # Convert keys to strings for JSON serialization
-        to_save = {str(k): v for k, v in channel_histories.items()}
         with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-            json.dump(to_save, f, ensure_ascii=False, indent=2)
+            json.dump(histories_snapshot, f, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.error(f"Error saving chat histories: {e}")
+
+def save_histories():
+    try:
+        # Convert keys to strings for JSON serialization and snapshot current state
+        # Offload file I/O to executor to avoid blocking Discord main event loop
+        to_save = {str(k): list(v) for k, v in channel_histories.items()}
+        _save_executor.submit(_save_histories_sync, to_save)
+    except Exception as e:
+        logger.error(f"Error enqueuing chat histories save: {e}")
 
 def get_history_with_system_context(channel_id):
     """Rebuild conversation history by prepending the latest vault metadata from _CLAUDE.md."""
@@ -495,7 +507,6 @@ async def on_message(message: discord.Message):
     if channel_id not in channel_histories:
         channel_histories[channel_id] = []
         
-    import re
     # Clean username to conform to standard LLM name requirements: ^[a-zA-Z0-9_-]+$
     author_name = re.sub(r'[^a-zA-Z0-9_-]', '', message.author.name)
     if not author_name:
