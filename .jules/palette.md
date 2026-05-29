@@ -1,0 +1,3 @@
+## 2024-06-25 - [Discord Tool Parameter Readability]
+**Learning:** Raw string serialization of dictionaries (`str(kwargs)`) for tool parameter outputs in Discord results in dense, unreadable text, especially for large payloads like file contents. Users have a hard time verifying what the agent is proposing to do before approving it.
+**Action:** Use `json.dumps(kwargs, indent=2, ensure_ascii=False)` enclosed in ```json ... ``` markdown blocks for tool parameter warnings. This provides syntax highlighting, preserves Unicode, and makes structured data much easier to read in Discord's UI. Fallback to `str()` only if JSON serialization fails.
