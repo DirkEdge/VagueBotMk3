@@ -1,0 +1,3 @@
+## 2024-05-30 - Formatting Discord Bot Action Prompts for UX
+**Learning:** Raw dictionaries rendered via `str(kwargs)` inside a Discord message are dense, unformatted, and hard for users to read quickly before approving a tool execution.
+**Action:** When a Discord bot needs to present complex parameters (like `kwargs` for a tool execution), format the dictionary using `json.dumps(kwargs, indent=2, ensure_ascii=False)` and enclose it in a Markdown JSON block (` ```json ... ``` `) to improve legibility and allow users to read key-value pairs easily. Always include a fallback `try/except` block to revert to `str()` if serialization fails.
