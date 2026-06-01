@@ -5,6 +5,8 @@ import asyncio
 import datetime
 import logging
 import time
+import copy
+import concurrent.futures
 from dotenv import load_dotenv
 
 import discord
@@ -145,14 +147,26 @@ def load_histories():
     else:
         channel_histories = {}
 
-def save_histories():
+# Single-worker executor guarantees FIFO ordering for sequential state saving
+io_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+def _save_histories_sync(histories_copy):
+    """Synchronous file IO function to run in background thread with atomic writes."""
     try:
         # Convert keys to strings for JSON serialization
-        to_save = {str(k): v for k, v in channel_histories.items()}
-        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+        to_save = {str(k): v for k, v in histories_copy.items()}
+        tmp_file = HISTORY_FILE + ".tmp"
+        with open(tmp_file, "w", encoding="utf-8") as f:
             json.dump(to_save, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_file, HISTORY_FILE)
     except Exception as e:
         logger.error(f"Error saving chat histories: {e}")
+
+def save_histories():
+    """Non-blocking: offloads disk I/O to prevent freezing the main thread loop."""
+    # Deepcopy prevents RuntimeError: dictionary changed size during iteration
+    histories_copy = copy.deepcopy(channel_histories)
+    io_executor.submit(_save_histories_sync, histories_copy)
 
 def get_history_with_system_context(channel_id):
     """Rebuild conversation history by prepending the latest vault metadata from _CLAUDE.md."""
