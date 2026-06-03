@@ -1,0 +1,3 @@
+## 2023-10-25 - Improve JSON Tool Parameter Readability for Accessibility
+**Learning:** Tool parameters passed into Discord notifications were previously outputted as simple Python strings (`str(kwargs)`). For multiline properties like file content (`vault_write_file`), this caused readability issues by forcing long horizontal scrolls or breaking visual layout, resulting in poor UX for code reviews.
+**Action:** Always format serialized dictionary/JSON payloads outputted to Discord text interfaces using `json.dumps(kwargs, indent=2, ensure_ascii=False)` enclosed in Markdown JSON blocks (` ```json\n...\n``` `), and ensure there is a fallback mechanism using `str()` for non-serializable objects.
