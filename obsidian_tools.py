@@ -57,11 +57,19 @@ async def _async_ask_user_with_buttons(bot, message: discord.Message, user_id: i
     view = InteractiveToolGate(user_id=user_id)
     
     # Format a warning showing what the bot is trying to do
-    kwargs_str = str(kwargs)
+    try:
+        kwargs_formatted = json.dumps(kwargs, indent=2, ensure_ascii=False)
+        kwargs_str = f"```json\n{kwargs_formatted}\n```"
+    except Exception:
+        kwargs_str = f"`{str(kwargs)}`"
+
     if len(kwargs_str) > 1000:
-        kwargs_str = kwargs_str[:1000] + "... [truncated]"
+        if kwargs_str.startswith("```json"):
+            kwargs_str = f"```json\n{kwargs_formatted[:950]}\n... [truncated]\n```"
+        else:
+            kwargs_str = kwargs_str[:1000] + "... [truncated]`"
         
-    warning_text = f"\n\n⚠️ **Action Required:** The agent wants to execute `{tool_name}`.\n**Parameters:** `{kwargs_str}`"
+    warning_text = f"\n\n⚠️ **Action Required:** The agent wants to execute `{tool_name}`.\n**Parameters:**\n{kwargs_str}"
     
     # Attach the buttons to the current placeholder message
     await message.edit(content=message.content + warning_text, view=view)
