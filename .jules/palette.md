@@ -1,0 +1,3 @@
+## 2024-06-05 - Actionable Error Messages in Text UI
+**Learning:** In purely text-based interfaces like Discord bots, generic error messages (e.g., "Error in agent processing") leave users stranded because they cannot "refresh the page" or see hidden context bounds. Discoverability of state reset commands like `!clear` is zero unless explicitly prompted.
+**Action:** Always pair exception messages with actionable tips in chat. When an agent loop fails, format the error nicely and explicitly suggest using `!clear` or breaking the prompt into smaller pieces so the user knows exactly how to unblock themselves.
