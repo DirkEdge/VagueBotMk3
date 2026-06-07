@@ -1,0 +1,3 @@
+## 2024-05-24 - Actionable Error Recovery for Discord Bots
+**Learning:** Text-based Discord bots lack visible state indicators (like context limits being reached) which can leave users feeling stuck when the backend agent loops or fails repeatedly. Standard error messages (`An error occurred: X`) are insufficient because the user cannot naturally infer how to resolve context overflow issues.
+**Action:** Always append explicit, actionable recovery steps (e.g., `try typing !clear`) to top-level agent loop exception handlers, giving users a way to reset invisible state constraints themselves.
