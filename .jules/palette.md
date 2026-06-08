@@ -1,0 +1,3 @@
+## 2024-06-08 - Improve Discord Bot Interaction Feedback
+**Learning:** Discord bot interactions need clear feedback mechanisms. When context boundary errors occur during hidden agent loops, users are often left without recourse unless actionable error messages explicitly suggest state reset commands (like `!clear`). Additionally, simple commands like `!ping` should provide actual performance context (e.g., latency) to assure the user the bot is responsive.
+**Action:** Always include explicitly suggested state reset commands or next steps in error states, and ensure basic interaction commands provide meaningful diagnostic feedback like latency.
