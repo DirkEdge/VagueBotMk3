@@ -5,6 +5,7 @@ import asyncio
 import datetime
 import logging
 import time
+import concurrent.futures
 from dotenv import load_dotenv
 
 import discord
@@ -123,6 +124,9 @@ async def clear(ctx):
 # File path for persistent chat histories
 HISTORY_FILE = os.path.join(os.path.dirname(__file__), "chat_history.json")
 
+# Single-worker thread pool to ensure FIFO background I/O operations
+_io_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
 # Map of channel_id -> list of conversational messages (excluding system messages)
 channel_histories = {}
 
@@ -145,14 +149,27 @@ def load_histories():
     else:
         channel_histories = {}
 
+def _write_history_to_disk(json_str: str):
+    """Background task to write the chat history to disk atomically."""
+    # ⚡ Bolt Optimization: Use background atomic writes to prevent I/O blocking
+    try:
+        tmp_file = f"{HISTORY_FILE}.tmp"
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            f.write(json_str)
+        os.replace(tmp_file, HISTORY_FILE)
+    except Exception as e:
+        logger.error(f"Error writing chat histories to disk: {e}")
+
 def save_histories():
     try:
-        # Convert keys to strings for JSON serialization
+        # ⚡ Bolt Optimization: Serialize in the main thread to avoid thread-safety
+        # issues (RuntimeError: dictionary changed size during iteration), while
+        # avoiding the overhead of copy.deepcopy().
         to_save = {str(k): v for k, v in channel_histories.items()}
-        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-            json.dump(to_save, f, ensure_ascii=False, indent=2)
+        json_str = json.dumps(to_save, ensure_ascii=False, indent=2)
+        _io_executor.submit(_write_history_to_disk, json_str)
     except Exception as e:
-        logger.error(f"Error saving chat histories: {e}")
+        logger.error(f"Error scheduling chat histories save: {e}")
 
 def get_history_with_system_context(channel_id):
     """Rebuild conversation history by prepending the latest vault metadata from _CLAUDE.md."""
