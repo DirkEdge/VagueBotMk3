@@ -1,0 +1,3 @@
+## 2024-05-18 - Atomic Background JSON Serialization
+**Learning:** When offloading state saving (e.g., `channel_histories`) to a background thread to prevent blocking the async event loop, do not pass the live dictionary directly to the thread (or deepcopy it, which is slow). Concurrent modifications by the main event loop will cause `RuntimeError: dictionary changed size during iteration`.
+**Action:** Pre-serialize the dictionary to a JSON string in the main thread (which is fast), then submit only the string to the background thread. Always use atomic writes (`tempfile.mkstemp` -> `os.replace`) in the background thread to prevent corrupted files if the process is terminated mid-write.
