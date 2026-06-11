@@ -5,6 +5,7 @@ import asyncio
 import datetime
 import logging
 import time
+import concurrent.futures
 from dotenv import load_dotenv
 
 import discord
@@ -145,14 +146,29 @@ def load_histories():
     else:
         channel_histories = {}
 
-def save_histories():
+# Use a single-worker ThreadPoolExecutor to guarantee FIFO ordering for state saving
+history_save_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+def _write_history_to_disk(state_str: str):
+    """Background task to atomic-write the serialized history to disk."""
     try:
-        # Convert keys to strings for JSON serialization
-        to_save = {str(k): v for k, v in channel_histories.items()}
-        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-            json.dump(to_save, f, ensure_ascii=False, indent=2)
+        tmp_file = f"{HISTORY_FILE}.tmp"
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            f.write(state_str)
+        os.replace(tmp_file, HISTORY_FILE)
     except Exception as e:
-        logger.error(f"Error saving chat histories: {e}")
+        logger.error(f"Error writing chat histories to disk: {e}")
+
+def save_histories():
+    """Optimized: Serialize state safely in main thread, offload disk I/O to background."""
+    try:
+        # 1. Thread-safe snapshot & serialization in main thread
+        to_save = {str(k): v for k, v in channel_histories.items()}
+        state_str = json.dumps(to_save, ensure_ascii=False, indent=2)
+        # 2. Offload slow disk write to background thread
+        history_save_executor.submit(_write_history_to_disk, state_str)
+    except Exception as e:
+        logger.error(f"Error preparing chat histories for save: {e}")
 
 def get_history_with_system_context(channel_id):
     """Rebuild conversation history by prepending the latest vault metadata from _CLAUDE.md."""

@@ -1,0 +1,3 @@
+## 2024-05-24 - Thread-safe state persistence optimization
+**Learning:** Offloading state persistence to a background thread improves main thread responsiveness, but `copy.deepcopy()` on dictionaries actively modified by asynchronous logic can lead to 'RuntimeError: dictionary changed size during iteration'.
+**Action:** Instead of deep copying, synchronously serialize the state to a JSON string in the main thread (`json.dumps`), and then pass that immutable string to the background thread's file I/O operations. Use a single-worker ThreadPoolExecutor to ensure FIFO ordering of consecutive saves.
