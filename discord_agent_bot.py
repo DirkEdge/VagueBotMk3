@@ -107,7 +107,8 @@ obsidian_tools.DISCORD_BOT = bot  # Set the reference in tools
 @bot.command()
 async def ping(ctx):
     logger.info("Ping command triggered.")
-    await ctx.send("pong")
+    latency_ms = round(bot.latency * 1000)
+    await ctx.send(f"🏓 Pong! Latency: {latency_ms}ms")
 
 @bot.command()
 async def clear(ctx):
