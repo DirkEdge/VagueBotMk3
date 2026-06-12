@@ -1,0 +1,3 @@
+## 2024-06-25 - Background State Saving & Atomic File Writes
+**Learning:** In async Discord bot applications (like `discord_agent_bot.py`), saving large state dictionaries to disk synchronously can block the event loop, causing timeouts or missed events. Directly passing dictionaries to background threads can cause "dictionary changed size during iteration" errors.
+**Action:** When offloading state saving to a background thread, serialize the state to a string (e.g., `json.dumps()`) in the main thread and pass the string to a single-worker `ThreadPoolExecutor`. Combine this with an atomic write (write to a `.tmp` file and use `os.replace()`) to prevent data corruption if the process crashes during the write operation.
