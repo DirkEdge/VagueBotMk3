@@ -354,21 +354,27 @@ class VaultSearcher(BaseTool):
                 
                 matched = False
                 excerpt = ""
-                if query in md.stem.lower():
+                stem_lower = md.stem.lower()
+
+                if query in stem_lower:
                     matched = True
                     # Grab start of content as excerpt
-                    lines = content.split("\n")
+                    lines = content[:2000].split("\n")
                     # skip frontmatter
                     non_fm_lines = [l for l in lines if not l.startswith("---")][:5]
                     excerpt = "Title match: " + " ".join(non_fm_lines)[:100]
-                elif query in content.lower():
-                    matched = True
-                    # Find a matching line
-                    for line in content.split("\n"):
-                        if query in line.lower():
-                            excerpt = line.strip()[:150]
-                            break
-                
+                else:
+                    content_lower = content.lower()
+                    if query in content_lower:
+                        matched = True
+                        # Find the first occurrence and extract the line
+                        idx = content_lower.find(query)
+                        start_idx = content_lower.rfind('\n', 0, idx) + 1
+                        end_idx = content_lower.find('\n', idx)
+                        if end_idx == -1:
+                            end_idx = len(content)
+                        excerpt = content[start_idx:end_idx].strip()[:150]
+
                 if matched:
                     results.append({
                         "file_path": rel,

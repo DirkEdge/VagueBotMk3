@@ -1,0 +1,3 @@
+## 2024-05-24 - Optimize VaultSearcher with `find` instead of `split("\n")`
+**Learning:** In Python, calling `split("\n")` on large string content creates an entire list of strings in memory. This is especially slow inside a tight search loop like in `VaultSearcher`, where each note might be large and only a single line (or excerpt) is needed.
+**Action:** Use `.find()` and `.rfind()` on newline characters to slice the string exactly around the target match, avoiding full string tokenization and reducing unnecessary heap allocation. Similarly, when splitting is needed for header extraction, slice the content first (e.g., `content[:2000].split("\n")`).
