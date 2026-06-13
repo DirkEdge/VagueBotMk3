@@ -1,0 +1,3 @@
+## 2024-06-13 - [UX Improvement] Actionable Errors and Micro-interactions in Text UI
+**Learning:** In a UI-less Discord bot environment, cryptic errors or lack of state awareness (like latency) leaves users helpless. Without visual UI hints (like spinners or reset buttons), text interactions must do the heavy lifting of guiding recovery and indicating status.
+**Action:** Always provide actionable tips in error messages (e.g., suggesting a reset command like `!clear`) and embed system state feedback (e.g., latency ping) in basic utility commands.
