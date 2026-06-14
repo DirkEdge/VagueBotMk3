@@ -107,7 +107,8 @@ obsidian_tools.DISCORD_BOT = bot  # Set the reference in tools
 @bot.command()
 async def ping(ctx):
     logger.info("Ping command triggered.")
-    await ctx.send("pong")
+    latency = bot.latency * 1000
+    await ctx.send(f"🏓 **Pong!** Latency: {latency:.2f}ms")
 
 @bot.command()
 async def clear(ctx):
@@ -566,7 +567,8 @@ async def run_agent_loop(message: discord.Message, placeholder: discord.Message,
                 
         except Exception as e:
             logger.error(f"Error running agent loop: {e}")
-            await placeholder.edit(content=f"❌ **An error occurred**: {e}")
+            error_msg = f"❌ **An error occurred**: {e}\n*Tip: If the bot is looping or failing, try using `!clear` to reset the context window.*"
+            await placeholder.edit(content=error_msg)
 
 
 if __name__ == "__main__":
