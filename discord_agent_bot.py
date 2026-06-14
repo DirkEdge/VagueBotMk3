@@ -5,6 +5,7 @@ import asyncio
 import datetime
 import logging
 import time
+import concurrent.futures
 from dotenv import load_dotenv
 
 import discord
@@ -123,6 +124,19 @@ async def clear(ctx):
 # File path for persistent chat histories
 HISTORY_FILE = os.path.join(os.path.dirname(__file__), "chat_history.json")
 
+# Single-worker executor to guarantee FIFO order for state persistence
+_history_save_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+def _write_history_to_disk(json_str):
+    """Background task to write history to disk atomically."""
+    try:
+        tmp_file = HISTORY_FILE + ".tmp"
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            f.write(json_str)
+        os.replace(tmp_file, HISTORY_FILE)
+    except Exception as e:
+        logger.error(f"Error in background writing chat histories: {e}")
+
 # Map of channel_id -> list of conversational messages (excluding system messages)
 channel_histories = {}
 
@@ -148,9 +162,19 @@ def load_histories():
 def save_histories():
     try:
         # Convert keys to strings for JSON serialization
+        # ⚡ OPTIMIZATION: Serialize in main thread to avoid 'dictionary changed size during iteration',
+        # then offload file I/O to background thread.
+        # Expected Impact: Prevents synchronous I/O from blocking the asyncio event loop.
         to_save = {str(k): v for k, v in channel_histories.items()}
-        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-            json.dump(to_save, f, ensure_ascii=False, indent=2)
+        json_str = json.dumps(to_save, ensure_ascii=False, indent=2)
+
+        try:
+            loop = asyncio.get_running_loop()
+            loop.run_in_executor(_history_save_executor, _write_history_to_disk, json_str)
+        except RuntimeError:
+            # If no running event loop, write synchronously
+            _write_history_to_disk(json_str)
+
     except Exception as e:
         logger.error(f"Error saving chat histories: {e}")
 
