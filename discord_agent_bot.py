@@ -566,7 +566,7 @@ async def run_agent_loop(message: discord.Message, placeholder: discord.Message,
                 
         except Exception as e:
             logger.error(f"Error running agent loop: {e}")
-            await placeholder.edit(content=f"❌ **An error occurred**: {e}")
+            await placeholder.edit(content=f"❌ **An error occurred while processing your request.**\n\n```\n{e}\n```\n*Please try your request again or check `#vault-logs` for more details.*")
 
 
 if __name__ == "__main__":
