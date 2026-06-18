@@ -1,0 +1,3 @@
+## 2024-05-18 - Non-Blocking File I/O in Async Python
+**Learning:** Synchronous file I/O operations block the main thread, causing latency spikes and degraded event loop performance in async applications. Using a single-worker ThreadPoolExecutor provides non-blocking I/O while ensuring thread-safe, FIFO execution order for state persistence. Serializing state (e.g. JSON) on the main thread avoids "RuntimeError: dictionary changed size during iteration".
+**Action:** Offload file writes and other blocking I/O to a background thread using concurrent.futures.ThreadPoolExecutor, ensuring state is serialized on the main thread first.
