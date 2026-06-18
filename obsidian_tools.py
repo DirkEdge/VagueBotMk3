@@ -343,40 +343,44 @@ class VaultSearcher(BaseTool):
             results = []
             
             # Simple content and title search
-            for md in VAULT_ROOT.rglob("*.md"):
-                # Exclude internal / trash directories
-                parts = md.relative_to(VAULT_ROOT).parts
-                if any(p in {".obsidian", ".trash", "_trash", ".git", "Templates"} for p in parts):
-                    continue
-                
-                rel = str(md.relative_to(VAULT_ROOT)).replace("\\", "/")
-                content = md.read_text(encoding="utf-8", errors="replace")
-                
-                matched = False
-                excerpt = ""
-                if query in md.stem.lower():
-                    matched = True
-                    # Grab start of content as excerpt
-                    lines = content.split("\n")
-                    # skip frontmatter
-                    non_fm_lines = [l for l in lines if not l.startswith("---")][:5]
-                    excerpt = "Title match: " + " ".join(non_fm_lines)[:100]
-                elif query in content.lower():
-                    matched = True
-                    # Find a matching line
-                    for line in content.split("\n"):
-                        if query in line.lower():
-                            excerpt = line.strip()[:150]
+            EXCLUDED_DIRS = {".obsidian", ".trash", "_trash", ".git", "Templates"}
+            for root, dirs, filenames in os.walk(VAULT_ROOT):
+                dirs[:] = [d for d in dirs if d not in EXCLUDED_DIRS]
+                for filename in filenames:
+                    if not filename.endswith(".md"):
+                        continue
+                    md = Path(root) / filename
+
+                    rel = str(md.relative_to(VAULT_ROOT)).replace("\\", "/")
+                    content = md.read_text(encoding="utf-8", errors="replace")
+
+                    matched = False
+                    excerpt = ""
+                    if query in md.stem.lower():
+                        matched = True
+                        # Grab start of content as excerpt
+                        lines = content.split("\n")
+                        # skip frontmatter
+                        non_fm_lines = [l for l in lines if not l.startswith("---")][:5]
+                        excerpt = "Title match: " + " ".join(non_fm_lines)[:100]
+                    elif query in content.lower():
+                        matched = True
+                        # Find a matching line
+                        for line in content.split("\n"):
+                            if query in line.lower():
+                                excerpt = line.strip()[:150]
+                                break
+
+                    if matched:
+                        results.append({
+                            "file_path": rel,
+                            "title": md.stem,
+                            "excerpt": excerpt
+                        })
+                        if len(results) >= 20:  # Cap results
                             break
-                
-                if matched:
-                    results.append({
-                        "file_path": rel,
-                        "title": md.stem,
-                        "excerpt": excerpt
-                    })
-                    if len(results) >= 20:  # Cap results
-                        break
+                if len(results) >= 20:  # Cap results out of outer loop too
+                    break
             
             elapsed = time.time() - start_time
             logger.info(f"VaultSearcher: search for '{query}' completed in {elapsed:.3f}s, found {len(results)} results")
@@ -410,13 +414,16 @@ class VaultLister(BaseTool):
                     return json.dumps({"status": "error", "message": f"Directory '{directory}' does not exist."}, ensure_ascii=False)
             
             files = []
-            for md in target_dir.rglob("*.md"):
-                parts = md.relative_to(VAULT_ROOT).parts
-                if any(p in {".obsidian", ".trash", "_trash", ".git", "Templates"} for p in parts):
-                    continue
-                
-                rel = str(md.relative_to(VAULT_ROOT)).replace("\\", "/")
-                files.append(rel)
+            EXCLUDED_DIRS = {".obsidian", ".trash", "_trash", ".git", "Templates"}
+            for root, dirs, filenames in os.walk(target_dir):
+                dirs[:] = [d for d in dirs if d not in EXCLUDED_DIRS]
+                for filename in filenames:
+                    if not filename.endswith(".md"):
+                        continue
+                    md = Path(root) / filename
+
+                    rel = str(md.relative_to(VAULT_ROOT)).replace("\\", "/")
+                    files.append(rel)
                 
             elapsed = time.time() - start_time
             logger.info(f"VaultLister: listed {len(files)} files in '{directory}' in {elapsed:.3f}s")
