@@ -1,0 +1,3 @@
+## 2024-06-20 - Non-blocking File I/O for State Persistence
+**Learning:** In async Discord bots, saving state (like chat histories) directly to disk on the main thread blocks the event loop, causing latency in message handling. Using a single-worker `ThreadPoolExecutor` ensures FIFO ordering without blocking. Furthermore, serializing to a JSON string before submitting to the background thread avoids thread-safety issues (`RuntimeError: dictionary changed size during iteration`) without the heavy performance cost of `copy.deepcopy()`.
+**Action:** Use a single-worker executor and pre-serialize state to strings on the main thread when offloading state saving in async applications.
