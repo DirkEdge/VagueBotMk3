@@ -5,6 +5,7 @@ import asyncio
 import datetime
 import logging
 import time
+import concurrent.futures
 from dotenv import load_dotenv
 
 import discord
@@ -145,12 +146,24 @@ def load_histories():
     else:
         channel_histories = {}
 
+_save_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+def _write_history_file(json_str: str, file_path: str):
+    try:
+        tmp_path = file_path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            f.write(json_str)
+        os.replace(tmp_path, file_path)
+    except Exception as e:
+        logger.error(f"Error saving chat history file: {e}")
+
 def save_histories():
     try:
         # Convert keys to strings for JSON serialization
         to_save = {str(k): v for k, v in channel_histories.items()}
-        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-            json.dump(to_save, f, ensure_ascii=False, indent=2)
+        # Serialize to JSON on main thread, then offload disk I/O
+        json_str = json.dumps(to_save, ensure_ascii=False, indent=2)
+        _save_executor.submit(_write_history_file, json_str, HISTORY_FILE)
     except Exception as e:
         logger.error(f"Error saving chat histories: {e}")
 
