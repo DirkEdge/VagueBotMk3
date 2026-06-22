@@ -1,0 +1,3 @@
+## 2024-10-25 - Safe File I/O in Async Python Bots
+**Learning:** Writing files synchronously in the main async event loop blocks other operations. Simply offloading file writing to a background thread using `asyncio.to_thread` or `ThreadPoolExecutor` can cause 'RuntimeError: dictionary changed size during iteration' if the state object is modified concurrently by the main thread.
+**Action:** Always serialize the state (e.g., `json.dumps()`) synchronously in the main thread before passing the resulting string to the background thread. For sequential file writes, use a single-worker `ThreadPoolExecutor` to guarantee FIFO execution, combined with atomic writes (`os.replace`) to prevent file corruption.
