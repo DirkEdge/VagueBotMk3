@@ -566,7 +566,7 @@ async def run_agent_loop(message: discord.Message, placeholder: discord.Message,
                 
         except Exception as e:
             logger.error(f"Error running agent loop: {e}")
-            await placeholder.edit(content=f"❌ **An error occurred**: {e}")
+            await placeholder.edit(content=f"❌ **An error occurred**: {e}\n\n*Tip: If the bot is stuck, try using `!clear` to reset the conversation context, or break down your prompt into smaller parts.*")
 
 
 if __name__ == "__main__":
