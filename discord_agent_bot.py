@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import asyncio
+import concurrent.futures
 import datetime
 import logging
 import time
@@ -145,14 +146,30 @@ def load_histories():
     else:
         channel_histories = {}
 
-def save_histories():
+# Use a single-worker executor to guarantee FIFO order for state saving
+_io_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+def _write_history_file(json_str: str):
     try:
-        # Convert keys to strings for JSON serialization
-        to_save = {str(k): v for k, v in channel_histories.items()}
-        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-            json.dump(to_save, f, ensure_ascii=False, indent=2)
+        # Atomic write to prevent file corruption
+        tmp_file = f"{HISTORY_FILE}.tmp"
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            f.write(json_str)
+        os.replace(tmp_file, HISTORY_FILE)
     except Exception as e:
-        logger.error(f"Error saving chat histories: {e}")
+        logger.error(f"Error saving chat histories to disk: {e}")
+
+def save_histories():
+    """Offloads JSON state saving to a background thread to prevent blocking the async event loop.
+    Serializes data in the main thread to guarantee thread safety."""
+    try:
+        # Serialize in the main thread to prevent 'dictionary changed size' during concurrent async execution
+        to_save = {str(k): v for k, v in channel_histories.items()}
+        json_str = json.dumps(to_save, ensure_ascii=False, indent=2)
+        # Offload blocking file I/O to the background thread
+        _io_executor.submit(_write_history_file, json_str)
+    except Exception as e:
+        logger.error(f"Error preparing chat histories for save: {e}")
 
 def get_history_with_system_context(channel_id):
     """Rebuild conversation history by prepending the latest vault metadata from _CLAUDE.md."""
