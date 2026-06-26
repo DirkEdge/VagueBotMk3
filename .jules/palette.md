@@ -1,0 +1,3 @@
+## 2024-05-18 - Actionable Error Messages in Chat Interfaces
+**Learning:** In a text-based chat interface (like Discord), users often feel stuck when encountering generic errors or when invisible context limits are reached. A simple error message without a clear next step leads to a poor user experience.
+**Action:** Always provide actionable suggestions in error states. For instance, when an agent loop fails, explicitly suggest commands like `!clear` to empower users to recover the session themselves. Adding latency feedback to basic commands like `!ping` also provides immediate, tangible system status feedback.
