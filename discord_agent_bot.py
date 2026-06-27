@@ -107,7 +107,8 @@ obsidian_tools.DISCORD_BOT = bot  # Set the reference in tools
 @bot.command()
 async def ping(ctx):
     logger.info("Ping command triggered.")
-    await ctx.send("pong")
+    latency = round(bot.latency * 1000)
+    await ctx.send(f"🏓 **Pong!** Latency: `{latency}ms`")
 
 @bot.command()
 async def clear(ctx):
@@ -255,7 +256,7 @@ def sync_agent_run(agent_instance, messages_list, placeholder=None, bot_loop=Non
             
     except Exception as e:
         logger.error(f"Error in sync_agent_run: {e}")
-        bot_response_content = f"Error in agent processing: {e}"
+        bot_response_content = f"❌ **Error in agent processing:** {e}\n\n*Tip: If the agent is stuck or context is too large, try using `!clear` to reset chat history.*"
     finally:
         # Clean up the thread-local context on exit
         obsidian_tools.thread_local.message = None
@@ -566,7 +567,7 @@ async def run_agent_loop(message: discord.Message, placeholder: discord.Message,
                 
         except Exception as e:
             logger.error(f"Error running agent loop: {e}")
-            await placeholder.edit(content=f"❌ **An error occurred**: {e}")
+            await placeholder.edit(content=f"❌ **An error occurred**: {e}\n\n*Tip: If the agent is stuck or context is too large, try using `!clear` to reset chat history.*")
 
 
 if __name__ == "__main__":
