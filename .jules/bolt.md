@@ -1,0 +1,3 @@
+## 2026-06-27 - [Async File I/O for `save_histories`]
+**Learning:** In a Discord bot event loop environment, `save_histories()` currently serializes data and writes to disk directly on the main event loop thread. Doing blocking I/O on the main thread causes the Discord loop to block, increasing latency and risking timeout disconnections under heavy loads.
+**Action:** The `save_histories()` function must perform its serialization to a string synchronously in the main thread (to avoid concurrency errors like "dictionary changed size during iteration") and then pass the resulting string to a single-worker background `ThreadPoolExecutor` to perform the actual disk write asynchronously and atomically.
