@@ -1,0 +1,3 @@
+## 2024-06-30 - [Offload Discord Bot File I/O]
+**Learning:** Synchronous file I/O (like writing chat histories to disk) on the main asyncio event loop blocks the loop, causing latency spikes and potential Discord disconnections under load. Also, dictionaries like `channel_histories` shouldn't be passed directly to background threads due to runtime resize errors.
+**Action:** Use `concurrent.futures.ThreadPoolExecutor(max_workers=1)` to offload file operations. Serialize the data (e.g., `json.dumps()`) in the main thread *before* passing it to the executor to ensure thread-safety and avoid deepcopy overhead. Use atomic writes (`os.replace`) to prevent corruption.
