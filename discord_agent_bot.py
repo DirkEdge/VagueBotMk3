@@ -5,6 +5,7 @@ import asyncio
 import datetime
 import logging
 import time
+import concurrent.futures
 from dotenv import load_dotenv
 
 import discord
@@ -130,6 +131,9 @@ channel_histories = {}
 active_sessions = {}
 SESSION_TIMEOUT_SECONDS = 600  # 10 minutes
 
+# ThreadPoolExecutor for background file I/O operations (1 worker ensures sequential writes)
+io_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
 def load_histories():
     global channel_histories
     if os.path.exists(HISTORY_FILE):
@@ -145,14 +149,32 @@ def load_histories():
     else:
         channel_histories = {}
 
-def save_histories():
+def _save_histories_blocking(serialized_data):
+    """Background task to perform the blocking disk write atomically."""
     try:
-        # Convert keys to strings for JSON serialization
-        to_save = {str(k): v for k, v in channel_histories.items()}
-        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-            json.dump(to_save, f, ensure_ascii=False, indent=2)
+        temp_file = HISTORY_FILE + ".tmp"
+        with open(temp_file, "w", encoding="utf-8") as f:
+            f.write(serialized_data)
+        os.replace(temp_file, HISTORY_FILE)
     except Exception as e:
-        logger.error(f"Error saving chat histories: {e}")
+        logger.error(f"Error writing chat histories to disk: {e}")
+
+def save_histories():
+    """Serializes histories in the main thread and queues the write to a background thread."""
+    try:
+        # Serialize in main thread to prevent concurrent modification errors in background thread
+        to_save = {str(k): v for k, v in channel_histories.items()}
+        serialized_data = json.dumps(to_save, ensure_ascii=False, indent=2)
+
+        # Offload the blocking write operation
+        try:
+            loop = asyncio.get_running_loop()
+            loop.run_in_executor(io_executor, _save_histories_blocking, serialized_data)
+        except RuntimeError:
+            # Fallback if no running loop (e.g. during synchronous startup/shutdown if ever called)
+            _save_histories_blocking(serialized_data)
+    except Exception as e:
+        logger.error(f"Error initiating chat histories save: {e}")
 
 def get_history_with_system_context(channel_id):
     """Rebuild conversation history by prepending the latest vault metadata from _CLAUDE.md."""
