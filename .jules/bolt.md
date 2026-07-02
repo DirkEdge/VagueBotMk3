@@ -1,0 +1,3 @@
+## 2024-05-23 - [Offloading blocking I/O in Asyncio Apps]
+**Learning:** Synchronous file writes in a Discord bot's main loop block the `asyncio` event loop. Offloading to a background thread requires thread safety to prevent concurrent modification errors (e.g., 'dictionary changed size during iteration'). Serializing state (e.g., `json.dumps()`) in the main thread before passing it to the executor is significantly faster and more efficient than deep copying.
+**Action:** For sequential state saving, use a single-worker `concurrent.futures.ThreadPoolExecutor` to guarantee FIFO ordering, and pass stringified state to background workers. Always use atomic writes (`.tmp` to `os.replace`) to prevent corruption.
