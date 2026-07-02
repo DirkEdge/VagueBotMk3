@@ -1,0 +1,3 @@
+## 2024-07-03 - Background threading for async operations
+**Learning:** In a Python Discord bot (`asyncio`) environment, performing synchronous disk I/O (like file writes) on the main event loop thread causes the loop to block, increasing latency and risking timeout disconnections. Offloading to a background thread using `concurrent.futures.ThreadPoolExecutor` prevents this.
+**Action:** Use a single-worker `concurrent.futures.ThreadPoolExecutor` to offload synchronous I/O operations from the main event loop thread without introducing new dependencies. Ensure thread safety by converting data to strings before submitting to the background thread.
