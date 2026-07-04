@@ -2,6 +2,10 @@ import os
 import sys
 import json
 import asyncio
+import concurrent.futures
+
+# Global single-worker executor to guarantee FIFO ordering for sequential state saving
+disk_io_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 import datetime
 import logging
 import time
@@ -145,12 +149,27 @@ def load_histories():
     else:
         channel_histories = {}
 
+def _write_history_to_disk(json_str: str):
+    """Write history string to disk atomically (runs in background thread)."""
+    tmp_file = f"{HISTORY_FILE}.tmp"
+    try:
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            f.write(json_str)
+        os.replace(tmp_file, HISTORY_FILE)
+    except Exception as e:
+        logger.error(f"Error writing chat histories to disk: {e}")
+
 def save_histories():
     try:
         # Convert keys to strings for JSON serialization
         to_save = {str(k): v for k, v in channel_histories.items()}
-        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-            json.dump(to_save, f, ensure_ascii=False, indent=2)
+
+        # Serialize state to string in main thread to prevent concurrent modification errors,
+        # which is much faster than deepcopy()
+        json_str = json.dumps(to_save, ensure_ascii=False, indent=2)
+
+        # Offload blocking disk I/O (atomic write) to background thread to unblock async event loop
+        disk_io_executor.submit(_write_history_to_disk, json_str)
     except Exception as e:
         logger.error(f"Error saving chat histories: {e}")
 
