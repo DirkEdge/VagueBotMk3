@@ -1,0 +1,3 @@
+## 2024-05-18 - Offloading File I/O in Asyncio
+**Learning:** Performing synchronous disk I/O (like file writes) on the main event loop thread in a Python Discord bot causes the loop to block, increasing latency and risking timeout disconnections. However, directly passing shared state objects (like dictionaries) to a background thread can cause `RuntimeError: dictionary changed size during iteration`.
+**Action:** Serialize the state to a string in the main thread and pass the string to a single-worker `ThreadPoolExecutor` for safe, sequential, non-blocking background writes. Use atomic writes (`.tmp` + `os.replace`) to prevent corruption.
