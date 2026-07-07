@@ -343,14 +343,23 @@ class VaultSearcher(BaseTool):
             results = []
             
             # Simple content and title search
-            for md in VAULT_ROOT.rglob("*.md"):
-                # Exclude internal / trash directories
-                parts = md.relative_to(VAULT_ROOT).parts
-                if any(p in {".obsidian", ".trash", "_trash", ".git", "Templates"} for p in parts):
-                    continue
+            excluded_dirs = {".obsidian", ".trash", "_trash", ".git", "Templates"}
+            for root, dirs, files in os.walk(VAULT_ROOT):
+                # Modify dirs in-place to prune excluded directories from the walk
+                dirs[:] = [d for d in dirs if d not in excluded_dirs]
                 
-                rel = str(md.relative_to(VAULT_ROOT)).replace("\\", "/")
-                content = md.read_text(encoding="utf-8", errors="replace")
+                for file_name in files:
+                    if not file_name.endswith(".md"):
+                        continue
+
+                    md = Path(root) / file_name
+                    rel = str(md.relative_to(VAULT_ROOT)).replace("\\", "/")
+
+                    try:
+                        content = md.read_text(encoding="utf-8", errors="replace")
+                    except Exception as e:
+                        logger.warning(f"Failed to read {md}: {e}")
+                        continue
                 
                 matched = False
                 excerpt = ""
@@ -410,13 +419,16 @@ class VaultLister(BaseTool):
                     return json.dumps({"status": "error", "message": f"Directory '{directory}' does not exist."}, ensure_ascii=False)
             
             files = []
-            for md in target_dir.rglob("*.md"):
-                parts = md.relative_to(VAULT_ROOT).parts
-                if any(p in {".obsidian", ".trash", "_trash", ".git", "Templates"} for p in parts):
-                    continue
+            excluded_dirs = {".obsidian", ".trash", "_trash", ".git", "Templates"}
+            for root, dirs, file_names in os.walk(target_dir):
+                # Prune excluded directories
+                dirs[:] = [d for d in dirs if d not in excluded_dirs]
                 
-                rel = str(md.relative_to(VAULT_ROOT)).replace("\\", "/")
-                files.append(rel)
+                for file_name in file_names:
+                    if file_name.endswith(".md"):
+                        md = Path(root) / file_name
+                        rel = str(md.relative_to(VAULT_ROOT)).replace("\\", "/")
+                        files.append(rel)
                 
             elapsed = time.time() - start_time
             logger.info(f"VaultLister: listed {len(files)} files in '{directory}' in {elapsed:.3f}s")
