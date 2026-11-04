@@ -343,11 +343,13 @@ class VaultSearcher(BaseTool):
             results = []
             
             # Simple content and title search
-            for md in VAULT_ROOT.rglob("*.md"):
-                # Exclude internal / trash directories
-                parts = md.relative_to(VAULT_ROOT).parts
-                if any(p in {".obsidian", ".trash", "_trash", ".git", "Templates"} for p in parts):
-                    continue
+            excluded = {".obsidian", ".trash", "_trash", ".git", "Templates"}
+            for root, dirs, files in os.walk(VAULT_ROOT):
+                dirs[:] = [d for d in dirs if d not in excluded]
+                for file in files:
+                    if not file.endswith(".md"):
+                        continue
+                    md = Path(root) / file
                 
                 rel = str(md.relative_to(VAULT_ROOT)).replace("\\", "/")
                 content = md.read_text(encoding="utf-8", errors="replace")
@@ -410,10 +412,13 @@ class VaultLister(BaseTool):
                     return json.dumps({"status": "error", "message": f"Directory '{directory}' does not exist."}, ensure_ascii=False)
             
             files = []
-            for md in target_dir.rglob("*.md"):
-                parts = md.relative_to(VAULT_ROOT).parts
-                if any(p in {".obsidian", ".trash", "_trash", ".git", "Templates"} for p in parts):
-                    continue
+            excluded = {".obsidian", ".trash", "_trash", ".git", "Templates"}
+            for root, dirs, filenames in os.walk(target_dir):
+                dirs[:] = [d for d in dirs if d not in excluded]
+                for file in filenames:
+                    if not file.endswith(".md"):
+                        continue
+                    md = Path(root) / file
                 
                 rel = str(md.relative_to(VAULT_ROOT)).replace("\\", "/")
                 files.append(rel)
