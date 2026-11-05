@@ -343,14 +343,19 @@ class VaultSearcher(BaseTool):
             results = []
             
             # Simple content and title search
-            for md in VAULT_ROOT.rglob("*.md"):
-                # Exclude internal / trash directories
-                parts = md.relative_to(VAULT_ROOT).parts
-                if any(p in {".obsidian", ".trash", "_trash", ".git", "Templates"} for p in parts):
-                    continue
-                
-                rel = str(md.relative_to(VAULT_ROOT)).replace("\\", "/")
-                content = md.read_text(encoding="utf-8", errors="replace")
+            # ⚡ OPTIMIZATION: Replace Path.rglob() with os.walk() + in-place directory pruning
+            # rglob() yields all files and then filters, taking O(N) where N is total vault size (including .git)
+            # os.walk() pruning avoids traversing excluded directories entirely, reducing I/O time significantly.
+            excluded_dirs = {".obsidian", ".trash", "_trash", ".git", "Templates"}
+            for root, dirs, files in os.walk(VAULT_ROOT):
+                dirs[:] = [d for d in dirs if d not in excluded_dirs]
+                for file_name in files:
+                    if not file_name.endswith(".md"):
+                        continue
+                    md = Path(root) / file_name
+
+                    rel = str(md.relative_to(VAULT_ROOT)).replace("\\", "/")
+                    content = md.read_text(encoding="utf-8", errors="replace")
                 
                 matched = False
                 excerpt = ""
@@ -410,13 +415,17 @@ class VaultLister(BaseTool):
                     return json.dumps({"status": "error", "message": f"Directory '{directory}' does not exist."}, ensure_ascii=False)
             
             files = []
-            for md in target_dir.rglob("*.md"):
-                parts = md.relative_to(VAULT_ROOT).parts
-                if any(p in {".obsidian", ".trash", "_trash", ".git", "Templates"} for p in parts):
-                    continue
-                
-                rel = str(md.relative_to(VAULT_ROOT)).replace("\\", "/")
-                files.append(rel)
+            # ⚡ OPTIMIZATION: Replace target_dir.rglob() with os.walk() + in-place directory pruning
+            excluded_dirs = {".obsidian", ".trash", "_trash", ".git", "Templates"}
+            for root, dirs, filenames in os.walk(target_dir):
+                dirs[:] = [d for d in dirs if d not in excluded_dirs]
+                for file_name in filenames:
+                    if not file_name.endswith(".md"):
+                        continue
+                    md = Path(root) / file_name
+
+                    rel = str(md.relative_to(VAULT_ROOT)).replace("\\", "/")
+                    files.append(rel)
                 
             elapsed = time.time() - start_time
             logger.info(f"VaultLister: listed {len(files)} files in '{directory}' in {elapsed:.3f}s")
