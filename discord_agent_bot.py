@@ -107,7 +107,11 @@ obsidian_tools.DISCORD_BOT = bot  # Set the reference in tools
 @bot.command()
 async def ping(ctx):
     logger.info("Ping command triggered.")
-    await ctx.send("pong")
+    start_time = time.time()
+    message = await ctx.send("🏓 Pong!")
+    end_time = time.time()
+    latency = round((end_time - start_time) * 1000)
+    await message.edit(content=f"🏓 Pong! Latency: `{latency}ms` (API: `{round(bot.latency * 1000)}ms`)")
 
 @bot.command()
 async def clear(ctx):
@@ -566,7 +570,7 @@ async def run_agent_loop(message: discord.Message, placeholder: discord.Message,
                 
         except Exception as e:
             logger.error(f"Error running agent loop: {e}")
-            await placeholder.edit(content=f"❌ **An error occurred**: {e}")
+            await placeholder.edit(content=f"❌ **An error occurred**: {e}\n\n*Suggestion: Context limits might be exceeded. Try running `!clear` to reset the chat history.*")
 
 
 if __name__ == "__main__":
