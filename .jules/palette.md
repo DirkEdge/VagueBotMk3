@@ -1,4 +1,3 @@
-## 2024-05-24 - Actionable Error States
-
-**Learning:** Generic, single-line error messages without context or next steps are poor UX for bot users, who may feel stuck or blame the system. Presenting raw exceptions without code block formatting makes the message unreadable.
-**Action:** When bubbling up exceptions or failures, always wrap raw error output in markdown code blocks to preserve readability, and provide a clear, actionable next step (like suggesting where to check logs or to try again).
+## 2024-05-18 - Reply anchors context
+**Learning:** In chat interfaces, using direct replies (`message.reply`) instead of channel sends (`message.channel.send`) drastically improves UX by anchoring the bot's response to the specific user message, especially in busy channels.
+**Action:** Use `ctx.reply(..., mention_author=False)` or `message.reply(..., mention_author=False)` for bot responses to user commands/messages.
