@@ -2,6 +2,10 @@ import os
 import sys
 import json
 import asyncio
+import concurrent.futures
+
+# Global single-worker executor to guarantee FIFO ordering for sequential state saving
+disk_io_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 import datetime
 import logging
 import time
@@ -107,7 +111,7 @@ obsidian_tools.DISCORD_BOT = bot  # Set the reference in tools
 @bot.command()
 async def ping(ctx):
     logger.info("Ping command triggered.")
-    await ctx.send("pong")
+    await ctx.reply("pong", mention_author=False)
 
 @bot.command()
 async def clear(ctx):
@@ -116,9 +120,9 @@ async def clear(ctx):
         channel_histories[channel_id] = []
         save_histories()
         logger.info(f"Cleared chat history for channel {channel_id}.")
-        await ctx.send("🧹 **Chat history cleared successfully.**")
+        await ctx.reply("🧹 **Chat history cleared successfully.**", mention_author=False)
     else:
-        await ctx.send("🧹 **No chat history found for this channel.**")
+        await ctx.reply("🧹 **No chat history found for this channel.**", mention_author=False)
 
 # File path for persistent chat histories
 HISTORY_FILE = os.path.join(os.path.dirname(__file__), "chat_history.json")
@@ -128,7 +132,7 @@ channel_histories = {}
 
 # Active conversation session tracking (channel_id -> (last_user_id, last_timestamp))
 active_sessions = {}
-SESSION_TIMEOUT_SECONDS = 300  # 5 minutes
+SESSION_TIMEOUT_SECONDS = 600  # 10 minutes
 
 def load_histories():
     global channel_histories
@@ -145,18 +149,36 @@ def load_histories():
     else:
         channel_histories = {}
 
+def _write_history_to_disk(json_str: str):
+    """Write history string to disk atomically (runs in background thread)."""
+    tmp_file = f"{HISTORY_FILE}.tmp"
+    try:
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            f.write(json_str)
+        os.replace(tmp_file, HISTORY_FILE)
+    except Exception as e:
+        logger.error(f"Error writing chat histories to disk: {e}")
+
 def save_histories():
     try:
         # Convert keys to strings for JSON serialization
         to_save = {str(k): v for k, v in channel_histories.items()}
-        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-            json.dump(to_save, f, ensure_ascii=False, indent=2)
+
+        # Serialize state to string in main thread to prevent concurrent modification errors,
+        # which is much faster than deepcopy()
+        json_str = json.dumps(to_save, ensure_ascii=False, indent=2)
+
+        # Offload blocking disk I/O (atomic write) to background thread to unblock async event loop
+        disk_io_executor.submit(_write_history_to_disk, json_str)
     except Exception as e:
         logger.error(f"Error saving chat histories: {e}")
 
 def get_history_with_system_context(channel_id):
     """Rebuild conversation history by prepending the latest vault metadata from _CLAUDE.md."""
     history = list(channel_histories.get(channel_id, []))
+    # Ensure the conversational history starts with a user message to prevent Ollama 400 Bad Request errors
+    while history and history[0].get('role') != 'user':
+        history.pop(0)
     claude_md_path = VAULT_ROOT / "_CLAUDE.md"
     if claude_md_path.exists():
         try:
@@ -167,8 +189,13 @@ def get_history_with_system_context(channel_id):
             logger.error(f"Error loading _CLAUDE.md: {e}")
     return history
 
-def sync_agent_run(agent_instance, messages_list, placeholder=None, bot_loop=None) -> str:
+def sync_agent_run(agent_instance, messages_list, placeholder=None, bot_loop=None, user_id=None) -> str:
     """Synchronous function to consume the agent's runner generator. Runs safely in a background thread."""
+    # Populate the thread-local context for interactive gate checks
+    import obsidian_tools
+    obsidian_tools.thread_local.message = placeholder
+    obsidian_tools.thread_local.user_id = user_id
+
     logger.info(f"sync_agent_run: starting execution. Messages payload count: {len(messages_list)}")
     bot_response_content = "I encountered an issue processing your request."
     last_status = ""
@@ -248,6 +275,10 @@ def sync_agent_run(agent_instance, messages_list, placeholder=None, bot_loop=Non
     except Exception as e:
         logger.error(f"Error in sync_agent_run: {e}")
         bot_response_content = f"Error in agent processing: {e}"
+    finally:
+        # Clean up the thread-local context on exit
+        obsidian_tools.thread_local.message = None
+        obsidian_tools.thread_local.user_id = None
     return bot_response_content
 
 
@@ -493,7 +524,13 @@ async def on_message(message: discord.Message):
     if channel_id not in channel_histories:
         channel_histories[channel_id] = []
         
-    channel_histories[channel_id].append({'role': 'user', 'content': f"{message.author.name}: {user_prompt}"})
+    import re
+    # Clean username to conform to standard LLM name requirements: ^[a-zA-Z0-9_-]+$
+    author_name = re.sub(r'[^a-zA-Z0-9_-]', '', message.author.name)
+    if not author_name:
+        author_name = 'user'
+    channel_histories[channel_id].append({'role': 'user', 'content': user_prompt, 'name': author_name})
+
     
     # Prune conversational history to the last 30 messages to avoid context window overflow
     if len(channel_histories[channel_id]) > 30:
@@ -512,7 +549,7 @@ async def on_message(message: discord.Message):
     logger.info(f"Acknowledge message from {message.author}: sending placeholder in channel {channel_id}")
     # 1. Immediate Acknowledge: Send a tentative placeholder message
     try:
-        placeholder = await message.channel.send("🧠 *Thinking... parsing your vault context...*")
+        placeholder = await message.reply("🧠 *Thinking... parsing your vault context...*", mention_author=False)
     except Exception as e:
         logger.error(f"Failed to send placeholder message: {e}")
         return
@@ -534,7 +571,7 @@ async def run_agent_loop(message: discord.Message, placeholder: discord.Message,
             # Run Qwen-Agent generator in a separate worker thread to prevent event loop deadlocks with our async channel tools
             start_time = asyncio.get_event_loop().time()
             logger.info(f"run_agent_loop: starting agent for channel {channel_id} with history size {len(history_to_send)}")
-            bot_response_content = await asyncio.to_thread(sync_agent_run, agent, history_to_send, placeholder, bot.loop)
+            bot_response_content = await asyncio.to_thread(sync_agent_run, agent, history_to_send, placeholder, bot.loop, message.author.id)
             elapsed = asyncio.get_event_loop().time() - start_time
             logger.info(f"run_agent_loop: finished agent for channel {channel_id} in {elapsed:.3f}s. Response size: {len(bot_response_content)}")
                 
@@ -552,7 +589,7 @@ async def run_agent_loop(message: discord.Message, placeholder: discord.Message,
                 chunks = [bot_response_content[i:i+1900] for i in range(0, len(bot_response_content), 1900)]
                 await placeholder.edit(content=chunks[0])
                 for chunk in chunks[1:]:
-                    await message.channel.send(chunk)
+                    await message.reply(chunk, mention_author=False)
             else:
                 await placeholder.edit(content=bot_response_content)
                 
