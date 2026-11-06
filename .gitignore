@@ -17,3 +17,4 @@ test_vault_verify/
 
 # Logs
 *.log
+chat_history.json

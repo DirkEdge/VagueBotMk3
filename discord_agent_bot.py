@@ -1,8 +1,14 @@
 import os
 import sys
+import json
 import asyncio
+import concurrent.futures
+
+# Global single-worker executor to guarantee FIFO ordering for sequential state saving
+disk_io_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 import datetime
 import logging
+import time
 from dotenv import load_dotenv
 
 import discord
@@ -11,7 +17,7 @@ from discord.ext import tasks, commands
 # Add Qwen-Agent to the Python path
 sys.path.append(os.path.join(os.path.dirname(__file__), 'Qwen-Agent-main'))
 
-from qwen_agent.agents import Assistant
+from qwen_agent.agents import Assistant  # type: ignore
 import obsidian_tools
 from obsidian_tools import (
     VaultReader,
@@ -48,38 +54,49 @@ if not DISCORD_TOKEN:
 # Build Qwen-Agent LLM Config
 llm_cfg = {
     'model': LLM_MODEL,
+    'generate_cfg': {
+        'max_input_tokens': 15000
+    }
 }
 if LLM_API_KEY:
     llm_cfg['api_key'] = LLM_API_KEY
 if LLM_API_BASE:
     llm_cfg['base_url'] = LLM_API_BASE
+    llm_cfg['model_server'] = LLM_API_BASE  # Qwen-Agent uses 'model_server' for OpenAI compatible API
+if LLM_PROVIDER == "openai" or (LLM_API_BASE and "http" in LLM_API_BASE):
+    llm_cfg['model_type'] = 'oai'
 if LLM_USE_RAW_API:
     llm_cfg['use_raw_api'] = True
 
 logger.info(f"LLM Configuration: provider={LLM_PROVIDER}, model={LLM_MODEL}, base_url={LLM_API_BASE}, use_raw_api={LLM_USE_RAW_API}")
 
 # Define the central system prompt for Qwen-Agent
-SYSTEM_MESSAGE = """You are an advanced Obsidian Second Brain AI partner. You are proactive, "Always On", and manage a user's static knowledge vault via Discord.
-You operate on the vault using your provided tools: vault_read_file, vault_write_file, vault_search, vault_list_files, and vault_health_check.
+SYSTEM_MESSAGE = """# STRICT CODER EXECUTION MANDATES
 
-CORE RULES FOR VAULT WRITING (The AI-First Vault Principle):
-Every note you create or update MUST follow the AI-first vault rules:
-1. Self-contained context: each note explains itself, stating what, why, and when.
-2. "For future Claude" preamble: Every note must start with a 2-3 sentence English summary under a '## For future Claude' header, placed immediately after the frontmatter block.
-3. Rich, consistent YAML frontmatter: Every note must have delimiters (---) at the top, containing at least:
-   ---
-   date: YYYY-MM-DD
-   type: <note-type> (e.g. daily, project, person, idea, task, decision, devlog, review, research, adr)
-   tags: [tag1, tag2] (must include the note type as a tag)
-   ai-first: true
-   ---
-4. Recency markers: Inline dates (as of YYYY-MM, source) for all external factual claims.
-5. Verbatim source URLs preserved inline.
-6. Mandatory wikilinks: Link every person, project, idea, or decision using [[wikilinks]] (e.g., [[Projects/MyProject]], [[People/John Doe]]).
-7. Confidence levels: Use 'stated | high | medium | speculation' where applicable.
+1. Core Identity & Immutable Posture:
+You are an expert autonomous software architect operating in a zero-assumption environment. Prioritize deterministic verification, minimal file mutation, and rigorous state management. Never hallucinate context or rely on unsupported parametric memory.
 
-When writing or updating daily notes, projects, tasks, devlogs, or people, ensure you propagate changes (e.g., updating a project list or a task list when a task changes). Search before creating files to avoid duplication.
-If your file writes fail validation, you will receive an error from the tool. Fix the content and write it again.
+2. The Fetch-First Mandate:
+You are strictly PROHIBITED from formulating plans, generating code, or summarizing progress until you have explicitly read (fetched) every core file relevant to the task using vault_read_file.
+
+3. Evidence-Based Reporting & Truth Receipts:
+You cannot claim a task is completed, fixed, or added without providing verifiable proof. Summaries of actions MUST cite the specific file name and lines changed. After executing a file write, you MUST fetch the updated file content via vault_read_file and print a Truth Receipt—a direct, verbatim copy of the lines just modified, proving the write was successful.
+
+4. The CHANGELOG Save State & Changelog Receipts:
+The CHANGELOG.md file is the official Save State of the project architecture. If vault architecture, state logic, or templates are altered, you MUST update CHANGELOG.md using vault_write_file in the exact same turn and print a Changelog Receipt—a verbatim copy of the exact lines appended to the CHANGELOG.md file.
+
+5. AI-First Vault Writing Rules:
+Every note you create or update MUST follow these principles:
+- YAML Frontmatter: Enclosed by '---' delimiters containing:
+  - date: YYYY-MM-DD
+  - type: <note-type> (e.g. project, daily, person, task, devlog)
+  - tags: [tag1, tag2] (must include the note type as a tag)
+  - ai-first: true
+- '## For future Claude' Preamble: A 2-3 sentence summary immediately following the frontmatter.
+- Mandatory Wikilinks: Link every person, project, idea, or decision using [[wikilinks]] (e.g., [[Projects/MyProject]], [[People/John Doe]]).
+- Source URLs: Preserve verbatim source URLs inline.
+- Recency Markers: Inline dates (e.g., as of YYYY-MM) for all external factual claims.
+- Confidence levels: Use 'stated | high | medium | speculation' where applicable.
 """
 
 # Initialize Discord Bot
@@ -91,21 +108,179 @@ intents.messages = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 obsidian_tools.DISCORD_BOT = bot  # Set the reference in tools
 
-# Active user sessions / threads to maintain chat history
-# Map of channel_id -> list of Qwen-Agent message history
+@bot.command()
+async def ping(ctx):
+    logger.info("Ping command triggered.")
+    await ctx.send("pong")
+
+@bot.command()
+async def clear(ctx):
+    channel_id = ctx.channel.id
+    if channel_id in channel_histories:
+        channel_histories[channel_id] = []
+        save_histories()
+        logger.info(f"Cleared chat history for channel {channel_id}.")
+        await ctx.send("🧹 **Chat history cleared successfully.**")
+    else:
+        await ctx.send("🧹 **No chat history found for this channel.**")
+
+# File path for persistent chat histories
+HISTORY_FILE = os.path.join(os.path.dirname(__file__), "chat_history.json")
+
+# Map of channel_id -> list of conversational messages (excluding system messages)
 channel_histories = {}
 
-def sync_agent_run(agent_instance, messages_list) -> str:
+# Active conversation session tracking (channel_id -> (last_user_id, last_timestamp))
+active_sessions = {}
+SESSION_TIMEOUT_SECONDS = 600  # 10 minutes
+
+def load_histories():
+    global channel_histories
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+                # Convert keys back to integers (JSON keys are always strings)
+                channel_histories = {int(k): v for k, v in loaded.items()}
+                logger.info(f"Loaded persistent chat history for {len(channel_histories)} channels.")
+        except Exception as e:
+            logger.error(f"Error loading chat histories: {e}")
+            channel_histories = {}
+    else:
+        channel_histories = {}
+
+def _write_history_to_disk(json_str: str):
+    """Write history string to disk atomically (runs in background thread)."""
+    tmp_file = f"{HISTORY_FILE}.tmp"
+    try:
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            f.write(json_str)
+        os.replace(tmp_file, HISTORY_FILE)
+    except Exception as e:
+        logger.error(f"Error writing chat histories to disk: {e}")
+
+def save_histories():
+    try:
+        # Convert keys to strings for JSON serialization
+        to_save = {str(k): v for k, v in channel_histories.items()}
+
+        # Serialize state to string in main thread to prevent concurrent modification errors,
+        # which is much faster than deepcopy()
+        json_str = json.dumps(to_save, ensure_ascii=False, indent=2)
+
+        # Offload blocking disk I/O (atomic write) to background thread to unblock async event loop
+        disk_io_executor.submit(_write_history_to_disk, json_str)
+    except Exception as e:
+        logger.error(f"Error saving chat histories: {e}")
+
+def get_history_with_system_context(channel_id):
+    """Rebuild conversation history by prepending the latest vault metadata from _CLAUDE.md."""
+    history = list(channel_histories.get(channel_id, []))
+    # Ensure the conversational history starts with a user message to prevent Ollama 400 Bad Request errors
+    while history and history[0].get('role') != 'user':
+        history.pop(0)
+    claude_md_path = VAULT_ROOT / "_CLAUDE.md"
+    if claude_md_path.exists():
+        try:
+            claude_content = claude_md_path.read_text(encoding="utf-8")
+            system_content = f"Obsidian Vault Configuration (_CLAUDE.md):\n```markdown\n{claude_content}\n```"
+            history.insert(0, {'role': 'system', 'content': system_content})
+        except Exception as e:
+            logger.error(f"Error loading _CLAUDE.md: {e}")
+    return history
+
+def sync_agent_run(agent_instance, messages_list, placeholder=None, bot_loop=None, user_id=None) -> str:
     """Synchronous function to consume the agent's runner generator. Runs safely in a background thread."""
+    # Populate the thread-local context for interactive gate checks
+    import obsidian_tools
+    obsidian_tools.thread_local.message = placeholder
+    obsidian_tools.thread_local.user_id = user_id
+
+    logger.info(f"sync_agent_run: starting execution. Messages payload count: {len(messages_list)}")
     bot_response_content = "I encountered an issue processing your request."
+    last_status = ""
+    last_update_time = 0.0
+    response = []
+    
     try:
         for response in agent_instance.run(messages=messages_list):
-            if response:
-                bot_response_content = response[-1].get('content', '') if isinstance(response[-1], dict) else getattr(response[-1], 'content', '')
+            if not response:
+                continue
+                
+            curr_msg = response[-1]
+            content = curr_msg.get('content', '') if isinstance(curr_msg, dict) else getattr(curr_msg, 'content', '')
+            fn_call = curr_msg.get('function_call', None) if isinstance(curr_msg, dict) else getattr(curr_msg, 'function_call', None)
+            
+            status_text = ""
+            is_tool_call = False
+            if fn_call:
+                is_tool_call = True
+                tool_name = ""
+                if isinstance(fn_call, dict):
+                    tool_name = fn_call.get('name', '')
+                else:
+                    tool_name = getattr(fn_call, 'name', '')
+                status_text = f"⚙️ *Calling vault tool: `{tool_name}`...*"
+            elif content:
+                # Strip Markdown block formatting from status messages for readability
+                snippet = content.strip().replace("*", "").replace("_", "").split('\n')[-1]
+                if len(snippet) > 80:
+                    snippet = snippet[:80] + "..."
+                status_text = f"🧠 *Thinking: {snippet}*"
+            else:
+                status_text = "🧠 *Parsing vault context...*"
+                
+            if status_text != last_status:
+                now = time.time()
+                # Bypass throttle for tool calls or first update, otherwise throttle to 4.0 seconds
+                if is_tool_call or (now - last_update_time >= 4.0) or not last_status:
+                    logger.info(f"Agent Status (Updating Discord): {status_text}")
+                    last_status = status_text
+                    last_update_time = now
+                    
+                    # Update placeholder in Discord thread-safely
+                    if placeholder and bot_loop:
+                        asyncio.run_coroutine_threadsafe(placeholder.edit(content=status_text), bot_loop)
+                else:
+                    # Log internally but do not edit Discord placeholder to avoid rate limits
+                    logger.debug(f"Agent Status (Throttled): {status_text}")
+                    
+            bot_response_content = content
+            
+        # Extract successful file writes to append as a footer
+        vault_actions = []
+        if response:
+            for msg in response:
+                role = msg.get('role') if isinstance(msg, dict) else getattr(msg, 'role', '')
+                if role == 'function':
+                    name = msg.get('name') if isinstance(msg, dict) else getattr(msg, 'name', '')
+                    content = msg.get('content') if isinstance(msg, dict) else getattr(msg, 'content', '')
+                    try:
+                        parsed = json.loads(content)
+                        if parsed.get('status') == 'success':
+                            msg_text = parsed.get('message', '')
+                            if name == 'vault_write_file':
+                                if "'" in msg_text:
+                                    path_extracted = msg_text.split("'")[1]
+                                    vault_actions.append(f"Saved to `{path_extracted}`")
+                                else:
+                                    vault_actions.append(msg_text)
+                    except Exception:
+                        pass
+        if vault_actions:
+            unique_actions = list(dict.fromkeys(vault_actions))
+            actions_str = "\n".join(f"- {action}" for action in unique_actions)
+            bot_response_content += f"\n\n---\n📁 **Vault Updates:**\n{actions_str}"
+            
     except Exception as e:
         logger.error(f"Error in sync_agent_run: {e}")
         bot_response_content = f"Error in agent processing: {e}"
+    finally:
+        # Clean up the thread-local context on exit
+        obsidian_tools.thread_local.message = None
+        obsidian_tools.thread_local.user_id = None
     return bot_response_content
+
 
 
 def get_agent_for_channel(channel_id):
@@ -284,25 +459,49 @@ async def on_message(message: discord.Message):
         
     # Ignore commands prefix (like command commands if any)
     if message.content.startswith("!"):
+        logger.info(f"Command prefix detected. Processing command: {message.content!r}")
         await bot.process_commands(message)
         return
 
-    # Check if the message is in a DM or if the bot is explicitly mentioned
-    is_dm = isinstance(message.channel, discord.DMChannel)
+    # Check routing conditions
+    is_dm = message.guild is None
     is_mentioned = bot.user.mentioned_in(message)
-    
-    # Also support logging if it's the dedicated log/vault logs channel
     is_log_channel = LOG_CHANNEL_ID and message.channel.id == LOG_CHANNEL_ID
 
-    if not (is_dm or is_mentioned or is_log_channel):
-        return
+    # Check if this is a reply to the bot
+    is_reply_to_bot = False
+    if message.reference and message.reference.resolved:
+        resolved = message.reference.resolved
+        if isinstance(resolved, discord.Message) and resolved.author.id == bot.user.id:
+            is_reply_to_bot = True
+
+    # Check if the channel is a dedicated chat channel
+    is_chat_channel = False
+    if hasattr(message.channel, 'name'):
+        channel_name = message.channel.name.lower()
+        if channel_name in ('second-brain', 'vague-bot', 'chat-with-ai', 'obsidian-bot'):
+            is_chat_channel = True
+
+    # Check active conversation session continuation
+    is_session_continuation = False
+    now = datetime.datetime.now()
+    if message.channel.id in active_sessions:
+        last_user_id, last_time = active_sessions[message.channel.id]
+        if last_user_id == message.author.id and (now - last_time).total_seconds() < SESSION_TIMEOUT_SECONDS:
+            is_session_continuation = True
+
+    should_respond = is_dm or is_mentioned or is_log_channel or is_reply_to_bot or is_chat_channel or is_session_continuation
+
+    logger.info(f"Received message from {message.author} in {message.channel} (ID: {message.channel.id}): {message.content!r} "
+                f"[is_dm={is_dm}, is_mentioned={is_mentioned}, is_log_channel={is_log_channel}, "
+                f"is_reply_to={is_reply_to_bot}, is_chat_channel={is_chat_channel}, is_session={is_session_continuation}] -> should_respond={should_respond}")
 
     # Process conversational message in the agentic loop
     channel_id = message.channel.id
     
     # If the bot was mentioned in a server channel, strip the mention to get clean prompt
     user_prompt = message.content
-    if bot.user.mentioned_in(message):
+    if is_mentioned:
         # Remove the mention from the content (e.g. <@123456789>)
         mention_str = f"<@{bot.user.id}>"
         mention_nick_str = f"<@!{bot.user.id}>"
@@ -310,58 +509,85 @@ async def on_message(message: discord.Message):
         if not user_prompt:
             user_prompt = "Hello"  # Default prompt if it was just a raw mention
 
-    # 1. Immediate Acknowledge: Send a typing indicator and a tentative placeholder message
-    await message.channel.trigger_typing()
-    placeholder = await message.channel.send("🧠 *Thinking... parsing your vault context...*")
+    # --- 1. Passive Listening (For EVERY message) ---
+    # Append the formatted message to the channel history so the bot knows what is being discussed
+    if channel_id not in channel_histories:
+        channel_histories[channel_id] = []
+        
+    import re
+    # Clean username to conform to standard LLM name requirements: ^[a-zA-Z0-9_-]+$
+    author_name = re.sub(r'[^a-zA-Z0-9_-]', '', message.author.name)
+    if not author_name:
+        author_name = 'user'
+    channel_histories[channel_id].append({'role': 'user', 'content': user_prompt, 'name': author_name})
+
+    
+    # Prune conversational history to the last 30 messages to avoid context window overflow
+    if len(channel_histories[channel_id]) > 30:
+        channel_histories[channel_id] = channel_histories[channel_id][-30:]
+        
+    # Save the updated history to disk
+    save_histories()
+
+    # --- 2. Active Execution (Only if called) ---
+    if not should_respond:
+        return
+
+    # Update active session timestamp
+    active_sessions[message.channel.id] = (message.author.id, datetime.datetime.now())
+
+    logger.info(f"Acknowledge message from {message.author}: sending placeholder in channel {channel_id}")
+    # 1. Immediate Acknowledge: Send a tentative placeholder message
+    try:
+        placeholder = await message.channel.send("🧠 *Thinking... parsing your vault context...*")
+    except Exception as e:
+        logger.error(f"Failed to send placeholder message: {e}")
+        return
     
     # 2. Push processing to background task to keep WebSocket connection active
-    asyncio.create_task(run_agent_loop(message, placeholder, channel_id, user_prompt))
+    logger.info(f"Dispatching run_agent_loop as background task for channel {channel_id}")
+    asyncio.create_task(run_agent_loop(message, placeholder, channel_id))
 
-async def run_agent_loop(message: discord.Message, placeholder: discord.Message, channel_id: int, user_prompt: str):
-    try:
-        # Load or initialize chat history for this channel
-        if channel_id not in channel_histories:
-            channel_histories[channel_id] = []
+async def run_agent_loop(message: discord.Message, placeholder: discord.Message, channel_id: int):
+    # Use context manager to trigger typing across both DMs and Guild text channels safely
+    async with message.channel.typing():
+        try:
+            # Rebuild history list by prepending the latest vault system context
+            history_to_send = get_history_with_system_context(channel_id)
             
-        # Append user message to history
-        channel_histories[channel_id].append({'role': 'user', 'content': user_prompt})
-        
-        # Instantiate agent
-        agent = get_agent_for_channel(channel_id)
-        
-        # Initialize vault context if first time (e.g. read _CLAUDE.md)
-        claude_md_path = VAULT_ROOT / "_CLAUDE.md"
-        if len(channel_histories[channel_id]) == 1 and claude_md_path.exists():
-            try:
-                claude_content = claude_md_path.read_text(encoding="utf-8")
-                # Feed the vault metadata as system context inside the history
-                channel_histories[channel_id].insert(0, {
-                    'role': 'system', 
-                    'content': f"Obsidian Vault Configuration (_CLAUDE.md):\n```markdown\n{claude_content}\n```"
-                })
-            except Exception as e:
-                logger.error(f"Error loading _CLAUDE.md: {e}")
+            # Instantiate agent
+            agent = get_agent_for_channel(channel_id)
+            
+            # Run Qwen-Agent generator in a separate worker thread to prevent event loop deadlocks with our async channel tools
+            start_time = asyncio.get_event_loop().time()
+            logger.info(f"run_agent_loop: starting agent for channel {channel_id} with history size {len(history_to_send)}")
+            bot_response_content = await asyncio.to_thread(sync_agent_run, agent, history_to_send, placeholder, bot.loop, message.author.id)
+            elapsed = asyncio.get_event_loop().time() - start_time
+            logger.info(f"run_agent_loop: finished agent for channel {channel_id} in {elapsed:.3f}s. Response size: {len(bot_response_content)}")
                 
-        # Run Qwen-Agent generator in a separate worker thread to prevent event loop deadlocks with our async channel tools
-        bot_response_content = await asyncio.to_thread(sync_agent_run, agent, channel_histories[channel_id])
+            # Update history with bot response
+            channel_histories[channel_id].append({'role': 'assistant', 'content': bot_response_content})
             
-        # Update history with bot response
-        channel_histories[channel_id].append({'role': 'assistant', 'content': bot_response_content})
-        
-        # 3. Post synthesized response back to channel
-        # If response is too long for Discord (2000 character limit), split it
-        if len(bot_response_content) > 1900:
-            chunks = [bot_response_content[i:i+1900] for i in range(0, len(bot_response_content), 1900)]
-            await placeholder.edit(content=chunks[0])
-            for chunk in chunks[1:]:
-                await message.channel.send(chunk)
-        else:
-            await placeholder.edit(content=bot_response_content)
+            # Prune again (after adding assistant response) and save
+            if len(channel_histories[channel_id]) > 30:
+                channel_histories[channel_id] = channel_histories[channel_id][-30:]
+            save_histories()
             
-    except Exception as e:
-        logger.error(f"Error running agent loop: {e}")
-        await placeholder.edit(content=f"❌ **An error occurred**: {e}")
+            # 3. Post synthesized response back to channel
+            # If response is too long for Discord (2000 character limit), split it
+            if len(bot_response_content) > 1900:
+                chunks = [bot_response_content[i:i+1900] for i in range(0, len(bot_response_content), 1900)]
+                await placeholder.edit(content=chunks[0])
+                for chunk in chunks[1:]:
+                    await message.channel.send(chunk)
+            else:
+                await placeholder.edit(content=bot_response_content)
+                
+        except Exception as e:
+            logger.error(f"Error running agent loop: {e}")
+            await placeholder.edit(content=f"❌ **An error occurred**: {e}")
 
 
 if __name__ == "__main__":
+    load_histories()
     bot.run(DISCORD_TOKEN)

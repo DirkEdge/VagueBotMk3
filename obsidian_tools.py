@@ -1,12 +1,125 @@
 import os
+import sys
 import json
 import re
+import time
+import logging
+import concurrent.futures
 from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
 import json5
 
-from qwen_agent.tools.base import BaseTool, register_tool
+from qwen_agent.tools.base import BaseTool, register_tool  # type: ignore
+
+# Setup logger for tools
+logger = logging.getLogger('DiscordSecondBrain.Tools')
+
+import discord
+import asyncio
+import threading
+
+# Thread-local storage for Discord context (message, user_id)
+thread_local = threading.local()
+
+class InteractiveToolGate(discord.ui.View):
+    def __init__(self, user_id: int, timeout: float = 60.0):
+        super().__init__(timeout=timeout)
+        self.user_id = user_id
+        self.result = None
+
+    # Security: Ensure only the person who triggered the bot can click the buttons
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("Only the command author can use these buttons.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Approve", style=discord.ButtonStyle.green, emoji="✅")
+    async def btn_approve(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer() # Acknowledge the click
+        self.result = "approve"
+        self.stop() # Unblocks the view.wait()
+
+    @discord.ui.button(label="Skip", style=discord.ButtonStyle.red, emoji="❌")
+    async def btn_skip(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        self.result = "skip"
+        self.stop()
+
+    @discord.ui.button(label="Switch Tool", style=discord.ButtonStyle.blurple, emoji="🙋‍♂️")
+    async def btn_switch(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        self.result = "switch"
+        self.stop()
+
+async def _async_ask_user_with_buttons(bot, message: discord.Message, user_id: int, tool_name: str, kwargs: dict):
+    view = InteractiveToolGate(user_id=user_id)
+    
+    # Format a warning showing what the bot is trying to do
+    kwargs_str = str(kwargs)
+    if len(kwargs_str) > 1000:
+        kwargs_str = kwargs_str[:1000] + "... [truncated]"
+        
+    warning_text = f"\n\n⚠️ **Action Required:** The agent wants to execute `{tool_name}`.\n**Parameters:** `{kwargs_str}`"
+    
+    # Attach the buttons to the current placeholder message
+    await message.edit(content=message.content + warning_text, view=view)
+
+    # Pause execution until a button is clicked or it times out
+    await view.wait()
+
+    # Clean up by removing the buttons from the message
+    await message.edit(view=None)
+
+    if view.result == "approve":
+        return True, None
+    elif view.result == "skip":
+        return False, "User denied execution. Skip the current action."
+    elif view.result == "switch":
+        # Wait for the user to type their correction in the chat
+        prompt_msg = await message.channel.send(f"<@{user_id}> What tool or instruction should I use instead?")
+        
+        def check(m):
+            return m.author.id == user_id and m.channel.id == message.channel.id
+            
+        try:
+            # Wait 60 seconds for the user's text reply
+            reply = await bot.wait_for('message', check=check, timeout=60.0)
+            return False, f"User requested to switch context/tool. New instructions: '{reply.content}'"
+        except asyncio.TimeoutError:
+            return False, "User switch request timed out."
+    else:
+        return False, "Execution aborted: User did not respond within the timeout."
+
+def wait_for_user_approval_sync(tool_name: str, kwargs: dict):
+    """Blocks the background thread safely until the user clicks a UI button."""
+    auto_approve = os.getenv("AUTO_APPROVE", "False").lower() in ("true", "1", "yes")
+    if auto_approve:
+        logger.info(f"Auto-approve enabled: automatically approving execution of {tool_name}")
+        return True, None
+
+    message = getattr(thread_local, 'message', None)
+    user_id = getattr(thread_local, 'user_id', None)
+
+    
+    # Fail-open for automated background jobs (morning sweep, etc.) that have no user context
+    if not message or not user_id or getattr(sys.modules[__name__], 'DISCORD_BOT', None) is None:
+        return True, None 
+
+    future = asyncio.run_coroutine_threadsafe(
+        _async_ask_user_with_buttons(DISCORD_BOT, message, user_id, tool_name, kwargs), 
+        DISCORD_BOT.loop
+    )
+    
+    try:
+        # Buffer of 65s to allow the 60s View timeout to resolve naturally
+        approved, error_msg = future.result(timeout=65.0)
+        return approved, error_msg
+    except concurrent.futures.TimeoutError:
+        future.cancel()
+        return False, "Gateway Error: The button view thread timed out."
+
 
 # Load environment variables
 load_dotenv()
@@ -37,13 +150,21 @@ def find_channel(bot, channel_name_or_id: str):
     return None
 
 def run_async_on_bot(coro):
-    """Execute an async coroutine on the Discord bot's main loop and block for the result."""
+    """Execute an async coroutine on the Discord bot's main loop and block for the result with a 15.0s timeout."""
     global DISCORD_BOT
     if not DISCORD_BOT:
         raise ValueError("Discord bot is not initialized in obsidian_tools.")
     import asyncio
+    
+    logger.info(f"run_async_on_bot: scheduling coroutine {coro} on bot loop")
     future = asyncio.run_coroutine_threadsafe(coro, DISCORD_BOT.loop)
-    return future.result()
+    try:
+        return future.result(timeout=15.0)
+    except concurrent.futures.TimeoutError as te:
+        logger.error(f"run_async_on_bot: timeout executing coroutine {coro} (15.0s limit exceeded)", exc_info=True)
+        future.cancel()
+        raise TimeoutError("Discord Gateway request timed out (15.0s limit).") from te
+
 
 
 def get_absolute_path(relative_path: str) -> Path:
@@ -115,17 +236,23 @@ class VaultReader(BaseTool):
     }]
 
     def call(self, params: str, **kwargs) -> str:
+        logger.info(f"VaultReader called with params: {params}")
+        start_time = time.time()
         try:
             args = json5.loads(params)
             file_path = args.get('file_path')
             abs_path = get_absolute_path(file_path)
             
             if not abs_path.exists():
+                logger.warning(f"VaultReader: File '{file_path}' does not exist.")
                 return json.dumps({"status": "error", "message": f"File '{file_path}' does not exist."}, ensure_ascii=False)
             
             content = abs_path.read_text(encoding="utf-8")
+            elapsed = time.time() - start_time
+            logger.info(f"VaultReader: read file '{file_path}' successfully in {elapsed:.3f}s")
             return json.dumps({"status": "success", "content": content}, ensure_ascii=False)
         except Exception as e:
+            logger.error(f"Error in VaultReader: {e}", exc_info=True)
             return json.dumps({"status": "error", "message": str(e)}, ensure_ascii=False)
 
 
@@ -145,17 +272,28 @@ class VaultWriter(BaseTool):
     }]
 
     def call(self, params: str, **kwargs) -> str:
+        logger.info(f"VaultWriter called with params: {params}")
+        start_time = time.time()
         try:
             args = json5.loads(params)
+            
+            # Trigger the Interactive Button Gate
+            approved, error_msg = wait_for_user_approval_sync("vault_write_file", args)
+            if not approved:
+                logger.warning(f"VaultWriter execution denied by user gate: {error_msg}")
+                return json.dumps({"status": "error", "message": error_msg}, ensure_ascii=False)
+                
             file_path = args.get('file_path')
             content = args.get('content')
             
             # Enforce validation
             validation_errors = validate_ai_first(content, file_path)
             if validation_errors:
+                err_msg = "AI-First Vault Validation Failed:\n" + "\n".join(f"- {err}" for err in validation_errors)
+                logger.warning(f"VaultWriter validation failure for '{file_path}': {err_msg}")
                 return json.dumps({
                     "status": "error",
-                    "message": "AI-First Vault Validation Failed:\n" + "\n".join(f"- {err}" for err in validation_errors) + "\nPlease ensure the note content includes: YAML frontmatter with 'ai-first: true', 'type', 'date' (YYYY-MM-DD), 'tags', and a '## For future Claude' preamble at the top."
+                    "message": err_msg + "\nPlease ensure the note content includes: YAML frontmatter with 'ai-first: true', 'type', 'date' (YYYY-MM-DD), 'tags', and a '## For future Claude' preamble at the top."
                 }, ensure_ascii=False)
             
             abs_path = get_absolute_path(file_path)
@@ -176,10 +314,13 @@ class VaultWriter(BaseTool):
                     else:
                         log_file.write_text(f"---\ndate: {today_str}\ntype: log\ntags: [log]\nai-first: true\n---\n## For future Claude\nOperation log for {today_str}.\n\n" + log_entry, encoding="utf-8")
             except Exception as log_error:
-                print(f"Error logging vault write operation: {log_error}")
-
+                logger.error(f"Error logging vault write operation: {log_error}", exc_info=True)
+ 
+            elapsed = time.time() - start_time
+            logger.info(f"VaultWriter: wrote '{file_path}' successfully in {elapsed:.3f}s")
             return json.dumps({"status": "success", "message": f"Successfully wrote to '{file_path}'."}, ensure_ascii=False)
         except Exception as e:
+            logger.error(f"Error in VaultWriter: {e}", exc_info=True)
             return json.dumps({"status": "error", "message": str(e)}, ensure_ascii=False)
 
 
@@ -194,6 +335,8 @@ class VaultSearcher(BaseTool):
     }]
 
     def call(self, params: str, **kwargs) -> str:
+        logger.info(f"VaultSearcher called with params: {params}")
+        start_time = time.time()
         try:
             args = json5.loads(params)
             query = args.get('query').lower()
@@ -239,8 +382,11 @@ class VaultSearcher(BaseTool):
                 if len(results) >= 20:  # Cap results out of outer loop too
                     break
             
+            elapsed = time.time() - start_time
+            logger.info(f"VaultSearcher: search for '{query}' completed in {elapsed:.3f}s, found {len(results)} results")
             return json.dumps({"status": "success", "results": results}, ensure_ascii=False)
         except Exception as e:
+            logger.error(f"Error in VaultSearcher: {e}", exc_info=True)
             return json.dumps({"status": "error", "message": str(e)}, ensure_ascii=False)
 
 
@@ -255,6 +401,8 @@ class VaultLister(BaseTool):
     }]
 
     def call(self, params: str, **kwargs) -> str:
+        logger.info(f"VaultLister called with params: {params}")
+        start_time = time.time()
         try:
             args = json5.loads(params)
             directory = args.get('directory', '').strip("/\\")
@@ -277,8 +425,11 @@ class VaultLister(BaseTool):
                     rel = str(md.relative_to(VAULT_ROOT)).replace("\\", "/")
                     files.append(rel)
                 
+            elapsed = time.time() - start_time
+            logger.info(f"VaultLister: listed {len(files)} files in '{directory}' in {elapsed:.3f}s")
             return json.dumps({"status": "success", "files": files}, ensure_ascii=False)
         except Exception as e:
+            logger.error(f"Error in VaultLister: {e}", exc_info=True)
             return json.dumps({"status": "error", "message": str(e)}, ensure_ascii=False)
 
 
@@ -288,6 +439,8 @@ class VaultHealthChecker(BaseTool):
     parameters = []
 
     def call(self, params: str, **kwargs) -> str:
+        logger.info(f"VaultHealthChecker called with params: {params}")
+        start_time = time.time()
         try:
             # We import and call the vault_health run_health_check function
             # Since vault_health.py is in obsidian-second-brain-main/scripts/vault_health.py,
@@ -297,10 +450,13 @@ class VaultHealthChecker(BaseTool):
             if scripts_path not in sys.path:
                 sys.path.append(scripts_path)
             
-            import vault_health
+            import vault_health  # type: ignore
             result = vault_health.run_health_check(VAULT_ROOT)
+            elapsed = time.time() - start_time
+            logger.info(f"VaultHealthChecker: completed health check in {elapsed:.3f}s")
             return json.dumps({"status": "success", "report": result}, ensure_ascii=False)
         except Exception as e:
+            logger.error(f"Error in VaultHealthChecker: {e}", exc_info=True)
             return json.dumps({"status": "error", "message": str(e)}, ensure_ascii=False)
 
 
@@ -310,6 +466,8 @@ class DiscordChannelLister(BaseTool):
     parameters = []
 
     def call(self, params: str, **kwargs) -> str:
+        logger.info(f"DiscordChannelLister called with params: {params}")
+        start_time = time.time()
         try:
             global DISCORD_BOT
             if not DISCORD_BOT:
@@ -323,8 +481,11 @@ class DiscordChannelLister(BaseTool):
                         "channel_name": channel.name,
                         "channel_id": str(channel.id)
                     })
+            elapsed = time.time() - start_time
+            logger.info(f"DiscordChannelLister: listed {len(channels)} channels in {elapsed:.3f}s")
             return json.dumps({"status": "success", "channels": channels}, ensure_ascii=False)
         except Exception as e:
+            logger.error(f"Error in DiscordChannelLister: {e}", exc_info=True)
             return json.dumps({"status": "error", "message": str(e)}, ensure_ascii=False)
 
 
@@ -344,6 +505,8 @@ class DiscordChannelReader(BaseTool):
     }]
 
     def call(self, params: str, **kwargs) -> str:
+        logger.info(f"DiscordChannelReader called with params: {params}")
+        start_time = time.time()
         try:
             global DISCORD_BOT
             if not DISCORD_BOT:
@@ -370,8 +533,11 @@ class DiscordChannelReader(BaseTool):
                 return msgs
                 
             history = run_async_on_bot(get_history(channel, limit))
+            elapsed = time.time() - start_time
+            logger.info(f"DiscordChannelReader: read {len(history)} messages from '{channel.name}' in {elapsed:.3f}s")
             return json.dumps({"status": "success", "channel": channel.name, "history": history}, ensure_ascii=False)
         except Exception as e:
+            logger.error(f"Error in DiscordChannelReader: {e}", exc_info=True)
             return json.dumps({"status": "error", "message": str(e)}, ensure_ascii=False)
 
 
@@ -391,12 +557,21 @@ class DiscordMessageSender(BaseTool):
     }]
 
     def call(self, params: str, **kwargs) -> str:
+        logger.info(f"DiscordMessageSender called with params: {params}")
+        start_time = time.time()
         try:
             global DISCORD_BOT
             if not DISCORD_BOT:
                 return json.dumps({"status": "error", "message": "Discord bot is not initialized."}, ensure_ascii=False)
             
             args = json5.loads(params)
+            
+            # Trigger the Interactive Button Gate
+            approved, error_msg = wait_for_user_approval_sync("discord_send_message", args)
+            if not approved:
+                logger.warning(f"DiscordMessageSender execution denied by user gate: {error_msg}")
+                return json.dumps({"status": "error", "message": error_msg}, ensure_ascii=False)
+                
             channel_name = args.get('channel_name')
             content = args.get('content')
             
@@ -409,7 +584,10 @@ class DiscordMessageSender(BaseTool):
                 return m.id
                 
             msg_id = run_async_on_bot(send_msg(channel, content))
+            elapsed = time.time() - start_time
+            logger.info(f"DiscordMessageSender: sent message {msg_id} to '{channel.name}' in {elapsed:.3f}s")
             return json.dumps({"status": "success", "message_id": str(msg_id)}, ensure_ascii=False)
         except Exception as e:
+            logger.error(f"Error in DiscordMessageSender: {e}", exc_info=True)
             return json.dumps({"status": "error", "message": str(e)}, ensure_ascii=False)
 
