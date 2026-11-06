@@ -1,0 +1,3 @@
+## 2024-11-06 - [Speed up Obsidian Vault Traversal]
+**Learning:** Using `Path.rglob("*.md")` in `obsidian_tools.py` requires traversing all directories and files, generating paths, and then post-filtering excluded directories like `.git` or `.obsidian`. This causes an O(N) penalty over the entire file system hierarchy which can be extremely slow for large vaults or vaults with large `.git`/`.obsidian` directories.
+**Action:** Use `os.walk()` to traverse the directory tree. `os.walk()` allows modifying the `dirs` list in-place (e.g., `dirs[:] = [d for d in dirs if d not in excluded]`), skipping recursive traversal of excluded directories entirely and drastically reducing I/O and processing time.
